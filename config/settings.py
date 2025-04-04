@@ -21,6 +21,7 @@ CSRF_TRUSTED_ORIGINS = [
 
 
 INSTALLED_APPS = [
+    'django_extensions',
     'drf_yasg',
     'rest_framework',  # Add this line
     'rest_framework_simplejwt',  # Add this line
@@ -116,9 +117,19 @@ DATABASES = {
         'PORT': '5432',
     }
 }
-
-# Static files
 STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, 'static'),  # Global static folder
+    os.path.join(BASE_DIR, 'styles'),  # If styles contains CSS
+]
+
+# Automatically collect static files from all apps
+for app in os.listdir(os.path.join(BASE_DIR, "apps")):
+    app_static_path = os.path.join(BASE_DIR, "apps", app, "static")
+    if os.path.exists(app_static_path):
+        STATICFILES_DIRS.append(app_static_path)
+
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Media files

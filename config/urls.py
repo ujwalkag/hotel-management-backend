@@ -3,6 +3,7 @@ from django.urls import path, include
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from rest_framework import permissions  # <-- Add this
+from apps.admin_dashboard import views as dashboard_views
 
 # API schema settings
 schema_view = get_schema_view(
@@ -15,16 +16,18 @@ schema_view = get_schema_view(
         license=openapi.License(name="BSD License"),
     ),
     public=True,
-    permission_classes=(permissions.AllowAny,),  # ✅ Correct now
+    permission_classes=(permissions.AllowAny,),
 )
 
 urlpatterns = [
+        
     path('admin/', admin.site.urls),  # Admin path
-    path('auth/', include('apps.authentication.urls')),  # Auth JWT paths
-    path('bookings/', include('apps.bookings.urls')),  # Bookings app
-    path('payments/', include('apps.payments.urls')),  # Payments app
-    path('notifications/', include('apps.notifications.urls')),  # Notifications app
-    path('dashboard/', include('apps.admin_dashboard.urls')),  # Add this line
+    path('api/auth/', include('apps.authentication.urls')),  # Auth JWT paths
+    path('api/bookings/', include('apps.bookings.urls')),  # Bookings app
+    path('api/payments/', include('apps.payments.urls')),  # Payments app
+    path('api/notifications/', include('apps.notifications.urls')),  # Notifications app
+    path('dashboard/', include('apps.admin_dashboard.urls')),  # Admin dashboard
+    path('', dashboard_views.dashboard_home, name="home"),  # Homepage set to dashboard
     # API documentation
     path('api/docs/', schema_view.with_ui('swagger', cache_timeout=0), name='api-docs'),
     path('api/redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='api-redoc'),

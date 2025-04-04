@@ -4,7 +4,6 @@ from apps.bookings.models import Order, MenuItem, RoomService
 from django.db.models import Sum, Count
 from datetime import timedelta, datetime
 
-# Dashboard Home
 def dashboard_home(request):
     return render(request, 'admin_dashboard/dashboard_home.html')
 
