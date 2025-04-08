@@ -34,9 +34,11 @@ INSTALLED_APPS = [
     
     # Our applications
     'apps.authentication',
+    'apps.menu',
     'apps.bookings',
     'apps.notifications',
     'apps.payments',
+    'apps.bills',
     'apps.admin_dashboard',
 ]
 LOGGING = {

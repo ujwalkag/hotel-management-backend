@@ -1,11 +1,6 @@
 from rest_framework import serializers
+from apps.admin_dashboard.models import SalesSummary, BestSellingItem
 from apps.bookings.models import Order, MenuItem
-from .models import SalesSummary, BestSellingItem
-
-class OrderSummarySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Order
-        fields = ['id', 'order_type', 'total_price', 'created_at']
 
 
 class SalesSummarySerializer(serializers.ModelSerializer):
@@ -15,9 +10,22 @@ class SalesSummarySerializer(serializers.ModelSerializer):
 
 
 class BestSellingItemSerializer(serializers.ModelSerializer):
-    item_name = serializers.CharField(source='item.name')
+    item_name = serializers.CharField(source='item.name', read_only=True)
 
     class Meta:
         model = BestSellingItem
-        fields = ['item_name', 'sales_count']
+        fields = ['id', 'item', 'item_name', 'sales_count']
+
+
+class OrderStatsSerializer(serializers.Serializer):
+    total_orders = serializers.IntegerField()
+    completed_orders = serializers.IntegerField()
+    pending_orders = serializers.IntegerField()
+    failed_orders = serializers.IntegerField()
+
+
+class RevenueStatsSerializer(serializers.Serializer):
+    daily_sales = serializers.DecimalField(max_digits=10, decimal_places=2)
+    weekly_sales = serializers.DecimalField(max_digits=10, decimal_places=2)
+    monthly_sales = serializers.DecimalField(max_digits=10, decimal_places=2)
 

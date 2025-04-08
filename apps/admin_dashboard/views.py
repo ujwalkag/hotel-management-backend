@@ -1,54 +1,75 @@
-from django.shortcuts import render
-from django.http import JsonResponse
-from apps.bookings.models import Order, MenuItem, RoomService
-from django.db.models import Sum, Count
-from datetime import timedelta, datetime
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.utils.timezone import now
+from datetime import timedelta
+from django.db import models
+from rest_framework.permissions import AllowAny
 
-def dashboard_home(request):
-    return render(request, 'admin_dashboard/dashboard_home.html')
+from apps.bookings.models import Order, MenuItem
+from apps.admin_dashboard.models import SalesSummary, BestSellingItem
+from .serializers import (
+    SalesSummarySerializer,
+    BestSellingItemSerializer,
+    OrderStatsSerializer,
+    RevenueStatsSerializer
+)
 
-# Order Summary
-def order_summary(request):
-    
-   
-    orders = Order.objects.all().count()
-    completed_orders = Order.objects.filter(status='completed').count()
-    pending_orders = Order.objects.filter(status='pending').count()
+class DashboardHomeView(APIView):
+    def get(self, request):
+        return Response({"message": "Welcome to the Admin Dashboard"}, status=status.HTTP_200_OK)
 
-    data = {
-        'total_orders': orders,
-        'completed_orders': completed_orders,
-        'pending_orders': pending_orders,
-    }
-    return JsonResponse(data)
+class OrderStatsView(APIView):
+    def get(self, request):
+        total_orders = Order.objects.count()
+        completed = Order.objects.filter(status='completed').count()
+        pending = Order.objects.filter(status='pending').count()
+        failed = Order.objects.filter(status='failed').count()
 
-# Sales Overview
-def sales_overview(request):
-    today = datetime.now()
-    daily_sales = Order.objects.filter(created_at__date=today).aggregate(Sum('total_price'))['total_price__sum'] or 0
-    weekly_sales = Order.objects.filter(created_at__gte=today - timedelta(days=7)).aggregate(Sum('total_price'))['total_price__sum'] or 0
-    monthly_sales = Order.objects.filter(created_at__gte=today - timedelta(days=30)).aggregate(Sum('total_price'))['total_price__sum'] or 0
+        data = {
+            "total_orders": total_orders,
+            "completed_orders": completed,
+            "pending_orders": pending,
+            "failed_orders": failed,
+        }
+        return Response(data, status=status.HTTP_200_OK)
 
-    data = {
-        'daily_sales': daily_sales,
-        'weekly_sales': weekly_sales,
-        'monthly_sales': monthly_sales,
-    }
-    return JsonResponse(data)
+class RevenueStatsView(APIView):
+    def get(self, request):
+        today = now().date()
+        week_ago = today - timedelta(days=7)
+        month_ago = today - timedelta(days=30)
 
-# Top Items
-def top_items(request):
-    #top_items = RestaurantItem.objects.annotate(order_count=Count('order')).order_by('-order_count')[:5]
-    top_items = MenuItem.objects.annotate(order_count=Count('order')).order_by('-order_count')[:5]
-    data = [{'name': item.name, 'orders': item.order_count} for item in top_items]
-    return JsonResponse(data, safe=False)
+        daily_sales = Order.objects.filter(
+            status='completed', created_at__date=today).aggregate(total=models.Sum('total_amount'))['total'] or 0
 
-# Revenue Analytics
-def revenue_analytics(request):
-    daily_revenue = Order.objects.filter(created_at__date=datetime.now()).aggregate(Sum('total_price'))['total_price__sum'] or 0
-    data = {
-        'daily_revenue': daily_revenue,
-        'message': 'Revenue analytics successfully fetched.'
-    }
-    return JsonResponse(data)
+        weekly_sales = Order.objects.filter(
+            status='completed', created_at__date__gte=week_ago).aggregate(total=models.Sum('total_amount'))['total'] or 0
+
+        monthly_sales = Order.objects.filter(
+            status='completed', created_at__date__gte=month_ago).aggregate(total=models.Sum('total_amount'))['total'] or 0
+
+        return Response({
+            "daily_sales": daily_sales,
+            "weekly_sales": weekly_sales,
+            "monthly_sales": monthly_sales,
+        }, status=status.HTTP_200_OK)
+
+class BestSellingItemsView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        top_items = BestSellingItem.objects.select_related('item').order_by('-sales_count')[:10]
+        serializer = BestSellingItemSerializer(top_items, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class SalesSummaryView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        summaries = SalesSummary.objects.all().order_by('-date')[:10]
+        serializer = SalesSummarySerializer(summaries, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
