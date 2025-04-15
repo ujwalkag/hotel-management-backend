@@ -5,6 +5,7 @@ from datetime import timedelta
 # Define BASE_DIR correctly
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = "lcik4moxnx@g+n!3r5sr0!=u47zjwbz7#)=2#db1g#g%fl3myz"
+AUTH_USER_MODEL = 'authentication.User'
 ALLOWED_HOSTS = [
     'hotelrshammad.co.in',
     'www.hotelrshammad.co.in',
