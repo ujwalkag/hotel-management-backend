@@ -1,14 +1,19 @@
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework import serializers
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    username_field = 'email'
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        # These are added to the token payload (useful if decoding token manually)
+        token['role'] = user.role
+        token['email'] = user.email
+        return token
 
     def validate(self, attrs):
-        attrs['username'] = attrs.get('email')  # Internally map to username
         data = super().validate(attrs)
-
-        data['email'] = self.user.email  # Or data['name'] = self.user.get_full_name() if you prefer
+        # Add these to response body
         data['role'] = self.user.role
+        data['email'] = self.user.email
         return data
 

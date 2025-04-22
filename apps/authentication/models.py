@@ -24,11 +24,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     # ✅ Add this field
     ROLE_CHOICES = [
         ('admin', 'Admin'),
-        ('employee', 'Employee'),
+        ('staff', 'Staff'),
     ]
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='employee')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='staff')
 
     USERNAME_FIELD = 'email'
+    EMAIL_FIELD = 'email'
     REQUIRED_FIELDS = []
 
     objects = UserManager()

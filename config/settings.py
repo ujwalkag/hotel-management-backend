@@ -24,8 +24,9 @@ CSRF_TRUSTED_ORIGINS = [
 INSTALLED_APPS = [
     'django_extensions',
     'drf_yasg',
-    'rest_framework',  # Add this line
-    'rest_framework_simplejwt',  # Add this line
+    'rest_framework',  
+    'rest_framework_simplejwt',  
+    'corsheaders',  
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -86,6 +87,7 @@ REST_FRAMEWORK = {
 
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -148,3 +150,12 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+CORS_ALLOWED_ORIGINS = [
+    "https://hotelrshammad.co.in",
+    "https://www.hotelrshammad.co.in",  # ✅ must be here
+]
+
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+
+
