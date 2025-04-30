@@ -155,7 +155,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.hotelrshammad.co.in",  # ✅ must be here
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+#CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 

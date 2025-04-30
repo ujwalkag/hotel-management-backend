@@ -13,5 +13,6 @@ urlpatterns = [
     path('orders/', OrderStatsView.as_view(), name='order-stats'),
     path('revenue/', RevenueStatsView.as_view(), name='revenue-stats'),
     path('top-items/', BestSellingItemsView.as_view(), name='best-selling-items'),
+    #path("all-orders/", AllOrdersView.as_view(), name="all-orders"),
 ]
 

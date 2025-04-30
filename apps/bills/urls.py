@@ -1,9 +1,10 @@
+# apps/bills/urls.py
 from django.urls import path
-from .views import BillCreateView, BillListView, BillInvoicePDFView
+from .views import CreateRestaurantBillView, CreateRoomBillView, BillHistoryView
 
 urlpatterns = [
-    path('create/', BillCreateView.as_view(), name='bill-create'),
-    path('list/', BillListView.as_view(), name='bill-list'),
-    path('<int:pk>/invoice/', BillInvoicePDFView.as_view(), name='bill-invoice'),
+    path("restaurant/", CreateRestaurantBillView.as_view(), name="create-restaurant-bill"),
+    path("room/", CreateRoomBillView.as_view(), name="create-room-bill"),
+    path("history/", BillHistoryView.as_view(), name="bill-history"),  # ✅ Add this
 ]
 

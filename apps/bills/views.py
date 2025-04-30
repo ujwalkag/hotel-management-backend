@@ -1,67 +1,87 @@
-from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from django.http import HttpResponse
-from reportlab.pdfgen import canvas
-from io import BytesIO
+from rest_framework import status, permissions
+from apps.bills.models import Bill
+from apps.menu.models import MenuItem
+from apps.bills.serializers import BillSerializer,BillHistorySerializer
+from django.contrib.auth import get_user_model
 
-from .models import Bill
-from .serializers import BillSerializer
+User = get_user_model()
 
+class StaffPermission(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user and request.user.is_authenticated and getattr(request.user, 'role', '') == 'staff'
 
-class BillCreateView(generics.CreateAPIView):
-    queryset = Bill.objects.all()
-    serializer_class = BillSerializer
-    permission_classes = [permissions.IsAuthenticated]
+class CreateRestaurantBillView(APIView):
+    permission_classes = [permissions.IsAuthenticated, StaffPermission]
 
-
-class BillListView(generics.ListAPIView):
-    queryset = Bill.objects.all().order_by('-created_at')
-    serializer_class = BillSerializer
-    permission_classes = [permissions.IsAdminUser]
-
-
-class BillInvoicePDFView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, pk):
+    def post(self, request):
         try:
-            bill = Bill.objects.get(pk=pk)
-        except Bill.DoesNotExist:
-            return Response({"error": "Bill not found"}, status=status.HTTP_404_NOT_FOUND)
+            items = request.data.get("items", [])  # Expects [{id: 1, qty: 2}]
+            if not items:
+                return Response({"error": "No items provided"}, status=400)
 
-        buffer = BytesIO()
-        p = canvas.Canvas(buffer)
+            total = 0
+            bill = Bill.objects.create(
+                created_by=request.user,
+                bill_type='restaurant',
+                total_amount=0  # Will update below
+            )
 
-        # Title
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(100, 800, f"Hotel Invoice - Bill #{bill.id}")
+            for item in items:
+                menu_item = MenuItem.objects.get(id=item["id"])
+                quantity = item.get("qty", 1)
+                total_price = menu_item.price * quantity
+                BillItem.objects.create(
+                    bill=bill,
+                    item=menu_item,
+                    quantity=quantity,
+                    total_price=total_price
+                )
+                total += total_price
 
-        # Basic info
-        p.setFont("Helvetica", 12)
-        p.drawString(100, 770, f"Date: {bill.created_at.strftime('%d-%m-%Y')}")
-        p.drawString(100, 750, f"Created By: {bill.created_by.username if bill.created_by else 'N/A'}")
+            bill.total_amount = total
+            bill.save()
 
-        if bill.room:
-            p.drawString(100, 730, f"Room: {bill.room}")
+            return Response({"message": "Bill created", "total": total}, status=201)
 
-        # Line items
-        y = 700
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(100, y, "Items:")
-        y -= 20
+        except MenuItem.DoesNotExist:
+            return Response({"error": "Menu item not found"}, status=404)
 
-        p.setFont("Helvetica", 12)
-        for item in bill.items.all():
-            p.drawString(120, y, f"{item.quantity} x {item.item.name} - ₹{item.total_price}")
-            y -= 20
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
-        # Total
-        p.setFont("Helvetica-Bold", 12)
-        p.drawString(100, y - 10, f"Total Amount: ₹{bill.total_amount}")
-        p.showPage()
-        p.save()
 
-        buffer.seek(0)
-        return HttpResponse(buffer, content_type='application/pdf')
+class CreateRoomBillView(APIView):
+    permission_classes = [permissions.IsAuthenticated, StaffPermission]
 
+    def post(self, request):
+        try:
+            room_number = request.data.get("room_number")
+            days = int(request.data.get("days", 1))
+            price_per_day = 1500  # Ideally fetch from DB
+            total = days * price_per_day
+
+            bill = Bill.objects.create(
+                created_by=request.user,
+                room=Room.objects.get(number=room_number),
+                total_amount=total,
+                bill_type='room',
+                remarks=f"Room {room_number} x {days} days"
+            )
+
+            return Response({"message": "Room bill created", "total": total}, status=201)
+
+        except Room.DoesNotExist:
+            return Response({"error": "Room not found"}, status=404)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
+
+class BillHistoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        bills = Bill.objects.all().order_by("-created_at")[:20]
+        serializer = BillHistorySerializer(bills, many=True)
+        return Response(serializer.data, status=200)

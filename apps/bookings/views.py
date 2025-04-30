@@ -1,23 +1,25 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
-from .models import MenuItem, RoomService, Order, Category
-from .serializers import MenuItemSerializer, RoomServiceSerializer, OrderSerializer, CategorySerializer
-
+from .models import MenuItem, RoomService, Order, Category, Room
+from .serializers import (
+    MenuItemSerializer,
+    RoomServiceSerializer,
+    OrderSerializer,
+    CategorySerializer,
+    RoomSerializer
+)
 
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
 
-
 class MenuItemViewSet(viewsets.ModelViewSet):
     queryset = MenuItem.objects.all()
     serializer_class = MenuItemSerializer
 
-
 class RoomServiceViewSet(viewsets.ModelViewSet):
     queryset = RoomService.objects.all()
     serializer_class = RoomServiceSerializer
-
 
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
@@ -36,4 +38,10 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         serializer = OrderSerializer(order)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+# ✅ NEW: Room ViewSet to handle /api/rooms/
+class RoomViewSet(viewsets.ModelViewSet):
+    queryset = Room.objects.all()
+    serializer_class = RoomSerializer
+    permission_classes = [permissions.IsAuthenticated]
 

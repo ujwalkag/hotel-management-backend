@@ -1,6 +1,13 @@
 from rest_framework import serializers
 from .models import MenuItem, RoomService, Order, Category
+# apps/bookings/serializers.py
+#from rest_framework import serializers
+from .models import Room  # Ensure Room is imported
 
+class RoomSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Room
+        fields = '__all__'
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:

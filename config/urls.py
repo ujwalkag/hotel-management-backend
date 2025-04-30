@@ -24,11 +24,12 @@ urlpatterns = [
     path('admin/', admin.site.urls),  # Admin path
     path('api/auth/', include('apps.authentication.urls')),  # Auth JWT paths
     path('api/menu/', include('apps.menu.urls')),
+    path('api/rooms/', include('apps.bookings.urls')),  # optional alias
     path('api/bookings/', include('apps.bookings.urls')),  # Bookings app
     path('api/payments/', include('apps.payments.urls')),  # Payments app
     path('api/notifications/', include('apps.notifications.urls')),  # Notifications app
     path('dashboard/', include('apps.admin_dashboard.urls')),  # Admin dashboard
-    path("api/bill/", include("apps.bills.urls")),
+    path("api/bills/", include("apps.bills.urls")),
     #path('api/bill/create/',apps.BillCreateAPIView.as_view(), name='create-bill'),
     # ✅ Add this line below:
     path('api/admin-dashboard/', include('apps.admin_dashboard.urls')),
