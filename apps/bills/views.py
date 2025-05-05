@@ -1,17 +1,21 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
-from apps.bills.models import Bill
+from apps.bills.models import Bill, BillItem
 from apps.menu.models import MenuItem
-from apps.bills.serializers import BillSerializer,BillHistorySerializer
+from apps.bookings.models import Room
+from apps.bills.serializers import BillSerializer, BillHistorySerializer
 from django.contrib.auth import get_user_model
+from django.db.models import Sum
 
 User = get_user_model()
 
+# ✅ Staff-only permission for billing
 class StaffPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_authenticated and getattr(request.user, 'role', '') == 'staff'
 
+# ✅ Restaurant Bill creation
 class CreateRestaurantBillView(APIView):
     permission_classes = [permissions.IsAuthenticated, StaffPermission]
 
@@ -25,7 +29,7 @@ class CreateRestaurantBillView(APIView):
             bill = Bill.objects.create(
                 created_by=request.user,
                 bill_type='restaurant',
-                total_amount=0  # Will update below
+                total_amount=0  # Will update later
             )
 
             for item in items:
@@ -43,7 +47,7 @@ class CreateRestaurantBillView(APIView):
             bill.total_amount = total
             bill.save()
 
-            return Response({"message": "Bill created", "total": total}, status=201)
+            return Response({"message": "Restaurant bill created", "total": total}, status=201)
 
         except MenuItem.DoesNotExist:
             return Response({"error": "Menu item not found"}, status=404)
@@ -51,7 +55,7 @@ class CreateRestaurantBillView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
-
+# ✅ Room Bill creation
 class CreateRoomBillView(APIView):
     permission_classes = [permissions.IsAuthenticated, StaffPermission]
 
@@ -59,12 +63,14 @@ class CreateRoomBillView(APIView):
         try:
             room_number = request.data.get("room_number")
             days = int(request.data.get("days", 1))
-            price_per_day = 1500  # Ideally fetch from DB
+            price_per_day = 1500  # Can be moved to model or config
+
+            room = Room.objects.get(room_number=room_number)
             total = days * price_per_day
 
             bill = Bill.objects.create(
                 created_by=request.user,
-                room=Room.objects.get(number=room_number),
+                room=room,
                 total_amount=total,
                 bill_type='room',
                 remarks=f"Room {room_number} x {days} days"
@@ -78,6 +84,7 @@ class CreateRoomBillView(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
+# ✅ Bill History (latest 20)
 class BillHistoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -85,3 +92,20 @@ class BillHistoryView(APIView):
         bills = Bill.objects.all().order_by("-created_at")[:20]
         serializer = BillHistorySerializer(bills, many=True)
         return Response(serializer.data, status=200)
+
+# ✅ Optional: Admin revenue summary
+class BillSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_staff:
+            return Response({"error": "Unauthorized"}, status=403)
+
+        total_bills = Bill.objects.count()
+        total_revenue = Bill.objects.aggregate(total=Sum("total_amount"))["total"] or 0
+
+        return Response({
+            "total_bills": total_bills,
+            "total_revenue": total_revenue
+        })
+

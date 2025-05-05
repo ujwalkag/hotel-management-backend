@@ -111,7 +111,7 @@ TEMPLATES = [
         },
     },
 ]
-
+WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -154,7 +154,14 @@ CORS_ALLOWED_ORIGINS = [
     "https://hotelrshammad.co.in",
     "https://www.hotelrshammad.co.in",  # ✅ must be here
 ]
-
+CORS_ALLOW_HEADERS = [
+    "authorization",
+    "content-type",
+    "x-csrftoken",
+    "accept",
+    "origin",
+    "user-agent",
+]
 #CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 

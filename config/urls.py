@@ -22,17 +22,17 @@ schema_view = get_schema_view(
 urlpatterns = [
         
     path('admin/', admin.site.urls),  # Admin path
-    path('api/auth/', include('apps.authentication.urls')),  # Auth JWT paths
-    path('api/menu/', include('apps.menu.urls')),
-    path('api/rooms/', include('apps.bookings.urls')),  # optional alias
-    path('api/bookings/', include('apps.bookings.urls')),  # Bookings app
-    path('api/payments/', include('apps.payments.urls')),  # Payments app
-    path('api/notifications/', include('apps.notifications.urls')),  # Notifications app
+    path('auth/', include('apps.authentication.urls')),  # Auth JWT paths
+    path('menu/', include('apps.menu.urls')),
+    path('rooms/', include('apps.bookings.urls')),  # optional alias
+    path('bookings/', include('apps.bookings.urls')),  # Bookings app
+    path('payments/', include('apps.payments.urls')),  # Payments app
+    path('notifications/', include('apps.notifications.urls')),  # Notifications app
     path('dashboard/', include('apps.admin_dashboard.urls')),  # Admin dashboard
-    path("api/bills/", include("apps.bills.urls")),
+    path("bills/", include("apps.bills.urls")),
     #path('api/bill/create/',apps.BillCreateAPIView.as_view(), name='create-bill'),
     # ✅ Add this line below:
-    path('api/admin-dashboard/', include('apps.admin_dashboard.urls')),
+    path('admin-dashboard/', include('apps.admin_dashboard.urls')),
 
     # API documentation
     path('api/docs/', schema_view.with_ui('swagger', cache_timeout=0), name='api-docs'),
