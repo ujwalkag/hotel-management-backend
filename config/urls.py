@@ -22,6 +22,7 @@ schema_view = get_schema_view(
 urlpatterns = [
         
     path('admin/', admin.site.urls),  # Admin path
+    path('api/media/', include('mediafiles.urls')),
     path('auth/', include('apps.authentication.urls')),  # Auth JWT paths
     path('menu/', include('apps.menu.urls')),
     path('rooms/', include('apps.bookings.urls')),  # optional alias

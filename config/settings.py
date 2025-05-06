@@ -1,6 +1,13 @@
 import os
 from pathlib import Path
 from datetime import timedelta
+from decouple import config
+
+ORACLE_STORAGE_REGION = config('ORACLE_STORAGE_REGION')
+ORACLE_STORAGE_NAMESPACE = config('ORACLE_STORAGE_NAMESPACE')
+ORACLE_BUCKET_NAME = config('ORACLE_BUCKET_NAME')
+ORACLE_ACCESS_KEY = config('ORACLE_ACCESS_KEY')
+ORACLE_SECRET_KEY = config('ORACLE_SECRET_KEY')
 
 # Define BASE_DIR correctly
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -23,6 +30,7 @@ CSRF_TRUSTED_ORIGINS = [
 
 INSTALLED_APPS = [
     'django_extensions',
+    'mediafiles',
     'drf_yasg',
     'rest_framework',  
     'rest_framework_simplejwt',  
