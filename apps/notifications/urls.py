@@ -1,6 +1,8 @@
 from django.urls import path
-from . import views
+from .views import NotificationRecipientListCreateView, NotificationRecipientRetrieveUpdateDestroyView
 
 urlpatterns = [
-    path('notify/', views.notify_admin, name='notify_admin'),
+    path('', NotificationRecipientListCreateView.as_view(), name='notification-recipient-list-create'),
+    path('<int:pk>/', NotificationRecipientRetrieveUpdateDestroyView.as_view(), name='notification-recipient-detail'),
 ]
+

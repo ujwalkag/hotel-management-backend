@@ -1,6 +1,14 @@
-from django.http import JsonResponse
+from rest_framework import generics, permissions
+from .models import NotificationRecipient
+from .serializers import NotificationRecipientSerializer
 
-def notify_admin(request):
-    # Simulate sending admin notification (we will refine this later)
-    return JsonResponse({"message": "Admin notified successfully!"})
+class NotificationRecipientListCreateView(generics.ListCreateAPIView):
+    queryset = NotificationRecipient.objects.all()
+    serializer_class = NotificationRecipientSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class NotificationRecipientRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = NotificationRecipient.objects.all()
+    serializer_class = NotificationRecipientSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
