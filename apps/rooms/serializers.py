@@ -1,8 +1,9 @@
+# apps/rooms/serializers.py
 from rest_framework import serializers
-from .models import RoomService
+from .models import Room
 
-class RoomServiceSerializer(serializers.ModelSerializer):
+class RoomSerializer(serializers.ModelSerializer):
     class Meta:
-        model = RoomService
-        fields = ['id', 'name', 'description', 'price', 'available', 'image', 'created_at', 'updated_at']
+        model = Room
+        fields = '__all__'
 

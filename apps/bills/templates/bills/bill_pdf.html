@@ -1,0 +1,66 @@
+{% load bill_extras %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Receipt {{ bill.receipt_number }}</title>
+    <style>
+        body { font-family: sans-serif; font-size: 14px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        .info { margin-bottom: 20px; }
+        .table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .table th, .table td { border: 1px solid #444; padding: 8px; text-align: left; }
+        .total { text-align: right; margin-top: 20px; font-size: 16px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Hotel Bill Receipt / होटल बिल रसीद</h2>
+        <p><strong>Receipt No / रसीद संख्या:</strong> {{ bill.receipt_number }}</p>
+        <p><strong>Date / दिनांक:</strong> {{ bill.created_at }}</p>
+    </div>
+
+    <div class="info">
+        <p><strong>Customer Name / ग्राहक का नाम:</strong> {{ bill.customer_name }}</p>
+        <p><strong>Phone / फ़ोन:</strong> {{ bill.customer_phone }}</p>
+        <p><strong>Bill Type / बिल प्रकार:</strong> {{ bill.bill_type|capfirst }}</p>
+        {% if bill.room %}
+        <p><strong>Room / कमरा:</strong> {{ bill.room.type }}</p>
+        {% endif %}
+    </div>
+
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Item / वस्तु</th>
+                <th>Qty / मात्रा</th>
+                <th>Price (₹) / मूल्य</th>
+                <th>Total (₹) / कुल</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>{{ item.item_name }}</td>
+                <td>{{ item.quantity }}</td>
+                <td>{{ item.price|floatformat:2 }}</td>
+                <td>{{ item.price|mul:item.quantity|floatformat:2 }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="total">
+        {% with subtotal=bill.total_amount|floatformat:2 %}
+            {% if gst %}
+                {% with gst_float=gst|floatformat:2 %}
+                    Subtotal (Excl. GST) / उप-योग (GST छोड़कर): ₹ {{ bill.total_amount|floatformat:2|floatval|float_sub:gst_float }}<br>
+                    GST ({{ gst_rate|floatformat:2 }}%): ₹ {{ gst_float }}<br>
+                {% endwith %}
+            {% endif %}
+            Grand Total / कुल योग: ₹ {{ subtotal }}
+        {% endwith %}
+    </div>
+</body>
+</html>
+

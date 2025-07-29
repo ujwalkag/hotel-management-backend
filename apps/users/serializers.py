@@ -1,16 +1,27 @@
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
+from .models import CustomUser
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        try:
+            data = super().validate(attrs)
+            data['email'] = self.user.email
+            data['role'] = self.user.role
+            return data
+        except AuthenticationFailed:
+            raise AuthenticationFailed(detail="Invalid email or password.")
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        token['role'] = user.role
         token['email'] = user.email
+        token['role'] = user.role
         return token
 
-    def validate(self, attrs):
-        data = super().validate(attrs)
-        data['role'] = self.user.role
-        data['email'] = self.user.email
-        return data
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'email', 'role']
 
