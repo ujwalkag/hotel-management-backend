@@ -1,42 +1,32 @@
-# apps/inventory/permissions.py
-from rest_framework.permissions import BasePermission
+# apps/inventory/permissions.py - Create admin-only permission for inventory
+from rest_framework import permissions
+from apps.users.models import CustomUser
 
-class IsAdminOnly(BasePermission):
+class IsAdminOnly(permissions.BasePermission):
     """
-    Permission that allows only admin users.
-    Inventory management should be admin-only for cost control.
+    Custom permission to only allow admin users to access inventory.
     """
     def has_permission(self, request, view):
         return (
+            request.user and 
             request.user.is_authenticated and 
             request.user.role == 'admin'
         )
 
-class IsAdminOrStaffReadOnly(BasePermission):
+class IsAdminOrReadOnly(permissions.BasePermission):
     """
-    Permission for viewing inventory - staff can view but not modify.
-    Admin can do everything, staff can only read.
-    """
-    def has_permission(self, request, view):
-        if request.method in ['GET', 'HEAD', 'OPTIONS']:
-            # Staff can view inventory
-            return (
-                request.user.is_authenticated and 
-                request.user.role in ['admin', 'staff']
-            )
-        else:
-            # Only admin can modify inventory
-            return (
-                request.user.is_authenticated and 
-                request.user.role == 'admin'
-            )
-
-class CanViewInventory(BasePermission):
-    """
-    Permission for viewing inventory items - both admin and staff.
+    Admin can do everything, others can only read (if needed for reports)
     """
     def has_permission(self, request, view):
-        return (
-            request.user.is_authenticated and 
-            request.user.role in ['admin', 'staff']
-        )
+        if not request.user or not request.user.is_authenticated:
+            return False
+        
+        # Admin can do everything
+        if request.user.role == 'admin':
+            return True
+            
+        # Staff can only read (for reports/viewing)
+        if request.user.role == 'staff' and request.method in permissions.SAFE_METHODS:
+            return True
+            
+        return False
