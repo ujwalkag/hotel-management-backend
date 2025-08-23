@@ -174,3 +174,5 @@ ORACLE_ACCESS_KEY = os.getenv('ORACLE_ACCESS_KEY')
 ORACLE_SECRET_KEY = os.getenv('ORACLE_SECRET_KEY')
 
 AUTH_USER_MODEL = 'users.CustomUser'
+# Add inventory app
+INSTALLED_APPS.append('apps.inventory')
