@@ -22,17 +22,40 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = (
         ('admin', 'Admin'),
         ('staff', 'Staff'),
+        ('waiter', 'Waiter'),
+        ('biller', 'Biller'),
     )
 
     email = models.EmailField(unique=True)
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)  # INCREASE to max_length=10
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    
+    # ADD THESE PERMISSION FIELDS
+    can_create_orders = models.BooleanField(default=False)
+    can_generate_bills = models.BooleanField(default=False)
+    can_access_kitchen = models.BooleanField(default=False)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
     objects = CustomUserManager()
+
+    def save(self, *args, **kwargs):
+        # Auto-assign permissions based on role
+        if self.role == 'admin':
+            self.can_create_orders = True
+            self.can_generate_bills = True
+            self.can_access_kitchen = True
+        elif self.role == 'waiter':
+            self.can_generate_bills = False
+            self.can_access_kitchen = False
+        elif self.role == 'biller':
+            self.can_create_orders = False
+            self.can_access_kitchen = False
+
+        super().save(*args, **kwargs)
+
 
     def __str__(self):
         return self.email

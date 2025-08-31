@@ -1,6 +1,29 @@
 # apps/tables/permissions.py
 from rest_framework.permissions import BasePermission
 
+class CanCreateOrders(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and 
+            (request.user.role == 'admin' or 
+             (request.user.role == 'waiter' and request.user.can_create_orders))
+        )
+
+class CanGenerateBills(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and 
+            (request.user.role == 'admin' or 
+             (request.user.role in ['biller', 'staff'] and request.user.can_generate_bills))
+        )
+
+class CanAccessKitchen(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and 
+            (request.user.role == 'admin' or request.user.can_access_kitchen)
+        )
+
 class IsAdminOrStaff(BasePermission):
     """
     Permission that allows admin and staff users to perform operations.
