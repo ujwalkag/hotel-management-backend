@@ -1,14 +1,14 @@
-# apps/staff/urls.py
+# apps/staff/urls.py - Complete Staff Management URLs
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from .views import StaffProfileViewSet, AttendanceViewSet
 from . import views
 
 router = DefaultRouter()
-router.register(r'profiles', views.StaffProfileViewSet)
-router.register(r'attendance', views.AttendanceViewSet)
-router.register(r'payments', views.PaymentRecordViewSet)
-router.register(r'advances', views.AdvancePaymentViewSet)
+router.register(r'profiles', StaffProfileViewSet, basename='staff-profiles')
+router.register(r'attendance', AttendanceViewSet, basename='staff-attendance')
 
 urlpatterns = [
     path('', include(router.urls)),
 ]
+
