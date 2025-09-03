@@ -1,7 +1,9 @@
+# apps/bills/views.py - COMPLETE UPDATED VERSION
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from django.utils.timezone import now
 from datetime import datetime
 from django.shortcuts import get_object_or_404
@@ -296,3 +298,156 @@ class BillDetailView(APIView):
         }
 
         return Response(data)
+
+
+# ============================================
+# ENHANCED BILLING API FUNCTIONS
+# ============================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_orders_ready_for_billing(request):
+    """Get all orders that are ready for billing"""
+    try:
+        from apps.tables.models import TableOrder
+
+        # Get completed orders that haven't been billed yet
+        orders = TableOrder.objects.filter(
+            status__in=['completed', 'ready']
+        ).exclude(status='billed').select_related('table', 'waiter').prefetch_related('items__menu_item')
+
+        order_data = []
+        for order in orders:
+            order_data.append({
+                'id': order.id,
+                'order_number': order.order_number,
+                'table_id': order.table.id,
+                'table_number': order.table.table_number,
+                'customer_name': order.customer_name or 'Guest',
+                'customer_phone': order.customer_phone or '',
+                'waiter_name': order.waiter.email if order.waiter else 'Unknown',
+                'total_amount': float(order.total_amount or 0),
+                'items_count': order.items.count(),
+                'created_at': order.created_at.isoformat(),
+                'status': order.status,
+                'items': [
+                    {
+                        'id': item.id,
+                        'name': item.menu_item.name_en,
+                        'name_hi': getattr(item.menu_item, 'name_hi', ''),
+                        'quantity': item.quantity,
+                        'price': float(item.price),
+                        'total': float(item.total_price),
+                        'menu_item': {
+                            'id': item.menu_item.id,
+                            'name_en': item.menu_item.name_en,
+                            'name_hi': getattr(item.menu_item, 'name_hi', ''),
+                            'price': float(item.menu_item.price)
+                        }
+                    }
+                    for item in order.items.all()
+                ]
+            })
+
+        return Response(order_data)
+
+    except Exception as e:
+        return Response({'error': f'Failed to fetch orders: {str(e)}'}, 
+                       status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_bill_from_order(request):
+    """Generate bill from completed order with GST calculation"""
+    data = request.data
+    order_id = data.get('order_id')
+    payment_method = data.get('payment_method', 'cash')
+    discount_percentage = Decimal(str(data.get('discount_percentage', '0')))
+
+    if not order_id:
+        return Response({'error': 'order_id is required'}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        from apps.tables.models import TableOrder
+
+        order = get_object_or_404(TableOrder, id=order_id)
+
+        # Check if order is ready for billing
+        if order.status not in ['completed', 'ready']:
+            return Response({
+                'error': f'Order must be completed before billing. Current status: {order.status}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create bill using existing structure
+        bill = Bill.objects.create(
+            user=request.user,
+            bill_type='restaurant',
+            customer_name=order.customer_name or 'Guest',
+            customer_phone=order.customer_phone or 'N/A',
+            payment_method=payment_method
+        )
+
+        # Add bill items from order
+        subtotal = Decimal('0')
+        for order_item in order.items.all():
+            BillItem.objects.create(
+                bill=bill,
+                item_name=f"{order_item.menu_item.name_en} (Table {order.table.table_number})",
+                quantity=order_item.quantity,
+                price=order_item.price
+            )
+            subtotal += Decimal(str(order_item.quantity)) * Decimal(str(order_item.price))
+
+        # Apply discount
+        discount_amount = (subtotal * discount_percentage) / 100
+        discounted_subtotal = subtotal - discount_amount
+
+        # Calculate GST (18% for restaurant services in India)
+        gst_rate = Decimal('0.18')
+        gst_amount = discounted_subtotal * gst_rate
+
+        # Calculate total
+        total_amount = discounted_subtotal + gst_amount
+
+        # Update bill with calculations
+        bill.total_amount = total_amount
+        bill.save()
+
+        # Mark order as billed
+        order.status = 'billed'
+        order.save()
+
+        # Free up table if no more active orders
+        if order.table.active_orders_count == 0:
+            order.table.is_occupied = False
+            order.table.save()
+
+        # Create GST breakdown for receipt
+        gst_breakdown = {
+            'subtotal': float(subtotal),
+            'discount_percentage': float(discount_percentage),
+            'discount_amount': float(discount_amount),
+            'taxable_amount': float(discounted_subtotal),
+            'cgst_rate': 9.0,  # Central GST
+            'sgst_rate': 9.0,  # State GST
+            'cgst_amount': float(gst_amount / 2),
+            'sgst_amount': float(gst_amount / 2),
+            'total_gst': float(gst_amount),
+            'total_amount': float(total_amount)
+        }
+
+        return Response({
+            'success': True,
+            'bill_id': bill.id,
+            'receipt_number': bill.receipt_number,
+            'gst_breakdown': gst_breakdown,
+            'message': 'Bill generated successfully'
+        })
+
+    except Exception as e:
+        return Response({
+            'error': f'Failed to generate bill: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+

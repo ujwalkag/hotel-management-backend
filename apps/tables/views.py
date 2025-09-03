@@ -1,6 +1,6 @@
-# apps/tables/views.py
+# apps/tables/views.py - COMPLETE UPDATED VERSION
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -38,14 +38,14 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter and search tables"""
         queryset = RestaurantTable.objects.filter(is_active=True)
-        
+
         # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter == 'available':
             queryset = queryset.filter(is_occupied=False)
         elif status_filter == 'occupied':
             queryset = queryset.filter(is_occupied=True)
-        
+
         # Search functionality
         search = self.request.query_params.get('search', None)
         if search:
@@ -53,14 +53,14 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
                 Q(table_number__icontains=search) |
                 Q(location__icontains=search)
             )
-        
+
         return queryset.order_by('table_number')
 
     @action(detail=True, methods=['post'])
     def create_order(self, request, pk=None):
         """Create a new order for this table"""
         table = self.get_object()
-        
+
         # Check if table is already occupied
         if table.is_occupied and hasattr(table, 'current_order') and table.current_order:
             return Response({
@@ -80,7 +80,7 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
                 'order_number': order.order_number,
                 'total_amount': str(order.total_amount)
             }, status=status.HTTP_201_CREATED)
-        
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=True, methods=['get'])
@@ -95,7 +95,7 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
     def free_table(self, request, pk=None):
         """Free up the table (mark as not occupied)"""
         table = self.get_object()
-        
+
         # Check if there are any active orders
         active_orders = table.orders.filter(status__in=['pending', 'in_progress']).count()
         if active_orders > 0:
@@ -106,7 +106,7 @@ class RestaurantTableViewSet(viewsets.ModelViewSet):
 
         table.is_occupied = False
         table.save()
-        
+
         return Response({
             'message': 'Table freed successfully',
             'table_number': table.table_number
@@ -155,7 +155,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
             'order_item__table_order__table',
             'order_item__menu_item'
         ).order_by('-is_priority', 'display_time')
-        
+
         serializer = KitchenDisplaySerializer(kitchen_items, many=True)
         return Response(serializer.data)
 
@@ -177,8 +177,8 @@ class TableOrderViewSet(viewsets.ModelViewSet):
                 }
             orders_by_table[table_num]['orders'].append(
                 TableOrderSerializer(order).data
-            )  # FIXED: Added missing closing parenthesis
-        
+            )
+
         return Response(orders_by_table)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated, CanCreateOrders])
@@ -188,11 +188,11 @@ class TableOrderViewSet(viewsets.ModelViewSet):
             orders = TableOrder.objects.filter(waiter=request.user)
         else:  # admin and staff can see all orders
             orders = TableOrder.objects.all()
-        
+
         orders = orders.filter(
             status__in=['pending', 'in_progress', 'completed']
         ).order_by('-created_at')
-        
+
         serializer = TableOrderSerializer(orders, many=True)
         return Response(serializer.data)
 
@@ -251,7 +251,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
     def add_items(self, request, pk=None):
         """Add items to existing order"""
         order = self.get_object()
-        
+
         if order.status not in ['pending', 'in_progress']:
             return Response(
                 {'error': 'Cannot add items to completed order'},
@@ -310,7 +310,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
     def complete_order(self, request, pk=None):
         """Mark order as completed"""
         order = self.get_object()
-        
+
         if order.status == 'completed':
             return Response({'message': 'Order is already completed'})
 
@@ -318,7 +318,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
         pending_items = order.items.exclude(
             status__in=['served', 'cancelled']
         ).count()
-        
+
         if pending_items > 0:
             return Response({
                 'error': f'Cannot complete order with {pending_items} pending items'
@@ -331,7 +331,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
             order.status = 'completed'
             order.completed_at = timezone.now()
             order.save()
-        
+
         return Response({
             'message': 'Order completed successfully',
             'status': order.status,
@@ -342,7 +342,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
     def generate_bill(self, request, pk=None):
         """Generate bill for this order"""
         order = self.get_object()
-        
+
         if order.status != 'completed':
             return Response({
                 'error': 'Order must be completed before generating bill'
@@ -406,7 +406,7 @@ class TableOrderViewSet(viewsets.ModelViewSet):
     def cancel_order(self, request, pk=None):
         """Cancel an order"""
         order = self.get_object()
-        
+
         if order.status in ['completed', 'billed']:
             return Response({
                 'error': 'Cannot cancel completed or billed order'
@@ -464,7 +464,7 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
         """Update order item status from kitchen"""
         kitchen_item = self.get_object()
         new_status = request.data.get('status')
-        
+
         valid_statuses = ['preparing', 'ready', 'served']
         if new_status not in valid_statuses:
             return Response({
@@ -517,10 +517,10 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
             try:
                 kitchen_item = KitchenDisplayItem.objects.get(id=update['id'])
                 new_status = update['status']
-                
+
                 if new_status in ['preparing', 'ready', 'served']:
                     order_item = kitchen_item.order_item
-                    
+
                     if new_status == 'preparing':
                         if hasattr(order_item, 'mark_preparing'):
                             order_item.mark_preparing()
@@ -539,7 +539,7 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
                         else:
                             order_item.status = 'served'
                             order_item.save()
-                    
+
                     updated_count += 1
                 else:
                     errors.append({
@@ -572,7 +572,7 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
         """Set priority status for kitchen item"""
         kitchen_item = self.get_object()
         is_priority = request.data.get('is_priority', False)
-        
+
         kitchen_item.is_priority = is_priority
         kitchen_item.save()
 
@@ -589,7 +589,7 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
         pending_items = queryset.filter(order_item__status='pending').count()
         preparing_items = queryset.filter(order_item__status='preparing').count()
         priority_items = queryset.filter(is_priority=True).count()
-        
+
         # Calculate overdue items (you may need to adjust this logic based on your models)
         overdue_items = 0
         try:
@@ -605,3 +605,97 @@ class KitchenDisplayViewSet(viewsets.ReadOnlyModelViewSet):
             'priority_items': priority_items,
             'overdue_items': overdue_items
         })
+
+
+# ============================================
+# MOBILE WAITER API FUNCTIONS
+# ============================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_tables_layout(request):
+    """Get all tables with current status for mobile waiter interface"""
+    tables = RestaurantTable.objects.all().order_by('table_number')
+
+    table_data = []
+    for table in tables:
+        current_order = table.current_order
+        table_data.append({
+            'id': table.id,
+            'table_number': table.table_number,
+            'capacity': table.capacity,
+            'location': table.location,
+            'is_occupied': table.is_occupied,
+            'is_active': table.is_active,
+            'current_order': {
+                'id': current_order.id,
+                'order_number': current_order.order_number,
+                'customer_name': current_order.customer_name,
+                'status': current_order.status,
+                'total_amount': float(current_order.total_amount)
+            } if current_order else None
+        })
+
+    return Response(table_data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_waiter_order(request):
+    """Create order from mobile waiter interface"""
+    data = request.data
+    table_id = data.get('table_id') or data.get('table')
+    items = data.get('items', [])
+
+    if not table_id or not items:
+        return Response({'error': 'table_id and items are required'}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        from apps.menu.models import MenuItem
+
+        table = get_object_or_404(RestaurantTable, id=table_id)
+
+        # Create the order
+        order = TableOrder.objects.create(
+            table=table,
+            waiter=request.user,
+            customer_name=data.get('customer_name', 'Guest'),
+            customer_phone=data.get('customer_phone', ''),
+            customer_count=data.get('customer_count', 1),
+            special_instructions=data.get('special_instructions', '')
+        )
+
+        # Add order items
+        total_amount = 0
+        for item_data in items:
+            menu_item_id = item_data.get('menu_item_id') or item_data.get('menu_item')
+            menu_item = get_object_or_404(MenuItem, id=menu_item_id)
+
+            order_item = OrderItem.objects.create(
+                table_order=order,
+                menu_item=menu_item,
+                quantity=item_data.get('quantity', 1),
+                price=menu_item.price,
+                special_instructions=item_data.get('special_instructions', '')
+            )
+            total_amount += order_item.total_price
+
+        # Update order total and table status
+        order.total_amount = total_amount
+        order.save()
+
+        table.is_occupied = True
+        table.save()
+
+        return Response({
+            'success': True,
+            'order_id': order.id,
+            'order_number': order.order_number,
+            'total_amount': float(order.total_amount),
+            'message': 'Order created successfully'
+        })
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+

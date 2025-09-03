@@ -1,4 +1,4 @@
-# apps/tables/mobile_urls.py - Mobile Waiter URLs
+# apps/tables/mobile_urls.py - COMPLETE VERSION  
 from django.urls import path
 from .views import get_tables_layout, create_waiter_order
 

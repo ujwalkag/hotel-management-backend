@@ -1,4 +1,4 @@
-# apps/staff/admin.py - EXACT MATCH TO YOUR MODELS
+# apps/staff/admin.py - FINAL CORRECTED VERSION (EXACT FIELD MATCH)
 from django.contrib import admin
 from django.utils import timezone
 from .models import StaffProfile, AttendanceRecord, AdvancePayment
@@ -36,9 +36,6 @@ class StaffProfileAdmin(admin.ModelAdmin):
         }),
     )
 
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related('user')
-
     actions = ['activate_staff', 'deactivate_staff']
 
     def activate_staff(self, request, queryset):
@@ -53,7 +50,7 @@ class StaffProfileAdmin(admin.ModelAdmin):
 
 @admin.register(AttendanceRecord)
 class AttendanceRecordAdmin(admin.ModelAdmin):
-    list_display = ['staff', 'employee_id', 'date', 'status', 'check_in_time', 'check_out_time', 'total_hours', 'created_by']
+    list_display = ['staff', 'date', 'status', 'check_in_time', 'check_out_time', 'total_hours']
     list_filter = ['status', 'date', 'staff__department']
     search_fields = ['staff__employee_id', 'staff__full_name', 'staff__user__email']
     date_hierarchy = 'date'
@@ -84,9 +81,6 @@ class AttendanceRecordAdmin(admin.ModelAdmin):
         return obj.staff.employee_id
     employee_id.short_description = 'Employee ID'
 
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related('staff__user', 'created_by')
-
     actions = ['mark_as_present', 'mark_as_absent']
 
     def mark_as_present(self, request, queryset):
@@ -101,10 +95,10 @@ class AttendanceRecordAdmin(admin.ModelAdmin):
 
 @admin.register(AdvancePayment)
 class AdvancePaymentAdmin(admin.ModelAdmin):
-    list_display = ['staff', 'employee_id', 'request_date', 'amount', 'status', 'remaining_amount', 'approved_by']
+    list_display = ['staff', 'request_date', 'amount', 'status', 'remaining_amount', 'approved_by']
     list_filter = ['status', 'request_date', 'staff__department']
     search_fields = ['staff__employee_id', 'staff__full_name', 'staff__user__email', 'reason']
-    readonly_fields = ['remaining_amount', 'created_at', 'updated_at']
+    readonly_fields = ['remaining_amount']
 
     fieldsets = (
         ('Advance Information', {
@@ -120,18 +114,11 @@ class AdvancePaymentAdmin(admin.ModelAdmin):
             'fields': ('notes',),
             'classes': ('collapse',)
         }),
-        ('Timestamps', {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        }),
     )
 
     def employee_id(self, obj):
         return obj.staff.employee_id
     employee_id.short_description = 'Employee ID'
-
-    def get_queryset(self, request):
-        return super().get_queryset(request).select_related('staff__user', 'approved_by')
 
     actions = ['approve_advances', 'reject_advances']
 
