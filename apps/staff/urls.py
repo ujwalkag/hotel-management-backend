@@ -11,5 +11,6 @@ router.register(r'attendance', views.AttendanceViewSet, basename='attendance')
 urlpatterns = [
     # Include router URLs
     path('', include(router.urls)),
+    path('payroll/generate/', views.generate_payroll, name='generate-payroll'),
 ]
 

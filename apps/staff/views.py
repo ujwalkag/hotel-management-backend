@@ -320,3 +320,117 @@ def generate_bill_from_order(request):
             'error': f'Failed to generate bill: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_payroll(request):
+    """Generate monthly payroll for staff - EXACTLY as called by frontend"""
+    staff_id = request.data.get('staff_id')
+    month = request.data.get('month', timezone.now().month)
+    year = request.data.get('year', timezone.now().year)
+    
+    if not staff_id:
+        return Response({'error': 'staff_id is required'}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        staff = get_object_or_404(StaffProfile, id=staff_id)
+        
+        # Get attendance records for the month
+        attendance_records = AttendanceRecord.objects.filter(
+            staff=staff,
+            date__month=month,
+            date__year=year
+        )
+        
+        # Calculate payroll metrics
+        total_days_present = attendance_records.filter(status='present').count()
+        total_days_absent = attendance_records.filter(status='absent').count()
+        total_hours = sum(float(record.total_hours or 0) for record in attendance_records)
+        overtime_hours = sum(float(record.overtime_hours or 0) for record in attendance_records)
+        
+        # Calculate amounts
+        base_salary = float(staff.base_salary or 0)
+        hourly_rate = float(staff.hourly_rate or 0)
+        
+        # Calculate overtime amount (1.5x rate)
+        overtime_amount = overtime_hours * hourly_rate * 1.5 if hourly_rate > 0 else 0
+        
+        # Calculate gross salary
+        gross_salary = base_salary + overtime_amount
+        
+        # Create payroll response exactly as frontend expects
+        payroll_data = {
+            'staff_id': staff_id,
+            'staff_name': staff.full_name,
+            'employee_id': staff.employee_id,
+            'month': month,
+            'year': year,
+            'total_days_present': total_days_present,
+            'total_days_absent': total_days_absent,
+            'total_hours': round(total_hours, 2),
+            'overtime_hours': round(overtime_hours, 2),
+            'base_salary': round(base_salary, 2),
+            'overtime_amount': round(overtime_amount, 2),
+            'gross_salary': round(gross_salary, 2),
+            'generated_at': timezone.now().isoformat()
+        }
+        
+        return Response({
+            'success': True,
+            'payroll': payroll_data,
+            'message': f'Payroll generated successfully for {staff.full_name}'
+        })
+        
+    except StaffProfile.DoesNotExist:
+        return Response({'error': 'Staff member not found'}, 
+                       status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': f'Failed to generate payroll: {str(e)}'}, 
+                       status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ALSO ADD this enhanced destroy method to your existing StaffProfileViewSet:
+
+# In your existing StaffProfileViewSet class, REPLACE the destroy method with this:
+def destroy(self, request, *args, **kwargs):
+    """Enhanced delete with proper error handling"""
+    try:
+        instance = self.get_object()
+        staff_name = instance.full_name
+        
+        # Check if staff has related records
+        has_attendance = instance.attendance_records.exists()
+        
+        if has_attendance:
+            # Soft delete - mark as terminated
+            instance.employment_status = 'terminated'
+            instance.save()
+            
+            # Also deactivate user account if exists
+            if instance.user:
+                instance.user.is_active = False
+                instance.user.save()
+                
+            return Response({
+                'success': True,
+                'message': f'{staff_name} marked as terminated (has attendance history)',
+                'type': 'soft_delete'
+            })
+        else:
+            # Hard delete if no records
+            user_to_delete = instance.user if hasattr(instance, 'user') else None
+            instance.delete()
+            
+            if user_to_delete:
+                user_to_delete.delete()
+                
+            return Response({
+                'success': True,
+                'message': f'{staff_name} deleted successfully',
+                'type': 'hard_delete'
+            })
+            
+    except Exception as e:
+        return Response({
+            'error': f'Failed to delete staff: {str(e)}'
+        }, status=status.HTTP_400_BAD_REQUEST)
