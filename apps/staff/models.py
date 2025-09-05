@@ -1,5 +1,3 @@
-
-# apps/staff/models.py - Complete Staff Management Models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.db import models
 from apps.users.models import CustomUser
@@ -143,3 +141,38 @@ class AdvancePayment(models.Model):
         db_table = 'staff_advance_payment'
         ordering = ['-request_date']
 
+# NEW PAYROLL STAFF MODEL - SEPARATE FROM BASE STAFF
+class PayrollStaff(models.Model):
+    """Separate payroll staff not linked to login accounts"""
+    
+    DEPARTMENT_CHOICES = (
+        ('kitchen', 'Kitchen'),
+        ('service', 'Service'),
+        ('housekeeping', 'Housekeeping'),
+        ('management', 'Management'),
+        ('billing', 'Billing'),
+    )
+    
+    employee_id = models.CharField(max_length=20, unique=True, blank=True)
+    full_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=15)
+    department = models.CharField(max_length=20, choices=DEPARTMENT_CHOICES)
+    position = models.CharField(max_length=100)
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    hourly_rate = models.DecimalField(max_digits=8, decimal_places=2, default=0)
+    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.employee_id:
+            self.employee_id = f"PAY{uuid.uuid4().hex[:6].upper()}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.full_name} ({self.employee_id})"
+
+    class Meta:
+        db_table = 'payroll_staff'
+        verbose_name = 'Payroll Staff'
+        verbose_name_plural = 'Payroll Staff'

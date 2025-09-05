@@ -1,9 +1,9 @@
-# apps/tables/serializers.py - COMPLETE UPDATED VERSION
 from rest_framework import serializers
 from .models import RestaurantTable, TableOrder, OrderItem, KitchenDisplayItem
 from apps.menu.models import MenuItem
 
-class RestaurantTableSerializer(serializers.ModelSerializer):
+# Main Table Serializer (matches import name in views.py)
+class TableSerializer(serializers.ModelSerializer):
     active_orders_count = serializers.ReadOnlyField()
     current_order = serializers.SerializerMethodField()
 
@@ -24,17 +24,31 @@ class RestaurantTableSerializer(serializers.ModelSerializer):
             }
         return None
 
+# Alias for consistency
+RestaurantTableSerializer = TableSerializer
+
 class OrderItemSerializer(serializers.ModelSerializer):
     menu_item_name = serializers.CharField(source='menu_item.name_en', read_only=True)
     menu_item_name_hi = serializers.CharField(source='menu_item.name_hi', read_only=True)
     total_price = serializers.ReadOnlyField()
     preparation_time_minutes = serializers.ReadOnlyField()
+    menu_item = serializers.SerializerMethodField()
 
     class Meta:
         model = OrderItem
         fields = ['id', 'menu_item', 'menu_item_name', 'menu_item_name_hi', 'quantity', 
                  'price', 'status', 'special_instructions', 'total_price', 'order_time',
                  'preparation_started', 'ready_time', 'served_time', 'preparation_time_minutes']
+
+    def get_menu_item(self, obj):
+        if obj.menu_item:
+            return {
+                'id': obj.menu_item.id,
+                'name_en': obj.menu_item.name_en,
+                'name_hi': getattr(obj.menu_item, 'name_hi', ''),
+                'price': float(obj.menu_item.price)
+            }
+        return None
 
 class OrderItemCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -51,7 +65,8 @@ class OrderItemCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Quantity must be greater than 0")
         return value
 
-class TableOrderSerializer(serializers.ModelSerializer):
+# Main Order Serializer (matches import name in views.py)
+class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     table_number = serializers.CharField(source='table.table_number', read_only=True)
     table_location = serializers.CharField(source='table.location', read_only=True)
@@ -68,6 +83,9 @@ class TableOrderSerializer(serializers.ModelSerializer):
 
     def get_items_count(self, obj):
         return obj.items.count()
+
+# Alias for consistency
+TableOrderSerializer = OrderSerializer
 
 class TableOrderCreateSerializer(serializers.ModelSerializer):
     items = OrderItemCreateSerializer(many=True, write_only=True)
@@ -169,4 +187,3 @@ class MobileOrderSerializer(serializers.ModelSerializer):
         fields = ['id', 'order_number', 'table_number', 'customer_name', 
                  'customer_phone', 'customer_count', 'status', 'total_amount', 
                  'items', 'created_at']
-
