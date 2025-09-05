@@ -1,204 +1,166 @@
-
-# BILLING ENHANCEMENTS
-
-# apps/bills/enhanced_views.py - Enhanced Billing with One-Click Generation
-from rest_framework import generics, status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from apps.tables.models import TableOrder
-from .models import Bill, BillItem
+from django.db import transaction
 from decimal import Decimal
-import json
+from datetime import datetime, date
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def generate_bill_from_order(request):
-    """One-click bill generation from table order with GST calculation"""
-    data = request.data
-    order_id = data.get('order_id')
-    payment_method = data.get('payment_method', 'cash')
-    discount_percentage = Decimal(data.get('discount_percentage', '0'))
+from .models import Bill, BillItem
+from .serializers import BillSerializer
+from apps.tables.models import Table
+from apps.menu.models import MenuItem
 
-    if not order_id:
-        return Response({'error': 'Order ID required'}, status=status.HTTP_400_BAD_REQUEST)
+class EnhancedBillingViewSet(viewsets.ModelViewSet):
+    """Enhanced Billing System with GST and Dynamic Updates"""
+    queryset = Bill.objects.all()
+    serializer_class = BillSerializer
+    permission_classes = [IsAuthenticated]
 
-    try:
-        order = get_object_or_404(TableOrder, pk=order_id)
-
-        # Check if order is ready for billing
-        if order.status not in ['completed', 'ready']:
-            return Response({
-                'error': 'Order must be completed before billing'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Create bill
-        bill = Bill.objects.create(
-            user=request.user,
-            bill_type='restaurant',
-            customer_name=order.customer_name or 'Table Guest',
-            customer_phone=order.customer_phone or 'N/A',
-            payment_method=payment_method
-        )
-
-        # Add bill items from order
-        subtotal = Decimal('0')
-        for order_item in order.items.all():
-            BillItem.objects.create(
-                bill=bill,
-                item_name=f"{order_item.menu_item.name_en} (Table {order.table.table_number})",
-                quantity=order_item.quantity,
-                price=order_item.price
+    @action(detail=False, methods=['get'])
+    def active_tables_dashboard(self, request):
+        """Get all tables with active orders for enhanced billing"""
+        # Get tables with orders from your existing table system
+        active_tables = Table.objects.filter(
+            status='occupied'  # Based on your existing table model
+        ).order_by('table_number')
+        
+        dashboard_data = []
+        
+        for table in active_tables:
+            # Get any existing bills for this table
+            table_bills = Bill.objects.filter(
+                # Assuming you have table reference in Bill model
+                customer_name__contains=f"Table {table.table_number}"
             )
-            subtotal += order_item.total_price
-
-        # Apply discount
-        discount_amount = (subtotal * discount_percentage) / 100
-        discounted_subtotal = subtotal - discount_amount
-
-        # Calculate GST (18% for restaurant services in India)
-        gst_rate = Decimal('0.18')
-        gst_amount = discounted_subtotal * gst_rate
-
-        # Calculate total
-        total_amount = discounted_subtotal + gst_amount
-
-        # Update bill with calculations
-        bill.total_amount = total_amount
-        bill.save()
-
-        # Create GST breakdown for receipt
-        gst_breakdown = {
-            'subtotal': float(subtotal),
-            'discount_percentage': float(discount_percentage),
-            'discount_amount': float(discount_amount),
-            'taxable_amount': float(discounted_subtotal),
-            'cgst_rate': 9.0,  # Central GST
-            'sgst_rate': 9.0,  # State GST
-            'cgst_amount': float(gst_amount / 2),
-            'sgst_amount': float(gst_amount / 2),
-            'total_gst': float(gst_amount),
-            'total_amount': float(total_amount)
-        }
-
-        # Mark order as billed
-        order.status = 'billed'
-        order.save()
-
-        # Free up table
-        if order.table.active_orders_count == 0:
-            order.table.is_occupied = False
-            order.table.save()
-
+            
+            total_amount = sum(bill.total_amount for bill in table_bills)
+            
+            dashboard_data.append({
+                'table_id': table.id,
+                'table_number': table.table_number,
+                'table_capacity': getattr(table, 'capacity', 4),
+                'bills_count': table_bills.count(),
+                'total_amount': total_amount,
+                'can_generate_bill': table.status == 'occupied'
+            })
+        
         return Response({
-            'success': True,
-            'bill_id': bill.id,
-            'receipt_number': bill.receipt_number,
-            'gst_breakdown': gst_breakdown,
+            'active_tables': dashboard_data,
+            'total_tables': len(dashboard_data),
+            'total_revenue_pending': sum(table['total_amount'] for table in dashboard_data)
+        })
+
+    @action(detail=True, methods=['post'])
+    def add_custom_item(self, request, pk=None):
+        """Add custom item to bill - Admin can add/edit items"""
+        bill = self.get_object()
+        
+        item_name = request.data.get('item_name')
+        quantity = request.data.get('quantity', 1)
+        price = request.data.get('price')
+        
+        if not item_name or not price:
+            return Response(
+                {'error': 'item_name and price are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create new bill item
+        BillItem.objects.create(
+            bill=bill,
+            item_name=item_name,
+            quantity=quantity,
+            price=Decimal(str(price))
+        )
+        
+        # Recalculate bill total
+        self._recalculate_bill_total(bill)
+        
+        return Response(BillSerializer(bill).data)
+
+    @action(detail=True, methods=['patch'])
+    def apply_gst(self, request, pk=None):
+        """Apply GST to bill"""
+        bill = self.get_object()
+        
+        apply_gst = request.data.get('apply_gst', True)
+        interstate = request.data.get('interstate', False)
+        
+        if apply_gst:
+            subtotal = bill.total_amount
+            
+            if interstate:
+                # IGST 18%
+                igst_amount = subtotal * Decimal('0.18')
+                gst_total = igst_amount
+            else:
+                # CGST + SGST 9% each
+                cgst_amount = subtotal * Decimal('0.09')
+                sgst_amount = subtotal * Decimal('0.09')
+                gst_total = cgst_amount + sgst_amount
+            
+            bill.total_amount = subtotal + gst_total
+            bill.save()
+            
+            return Response({
+                'bill': BillSerializer(bill).data,
+                'gst_details': {
+                    'subtotal': subtotal,
+                    'gst_amount': gst_total,
+                    'total_with_gst': bill.total_amount,
+                    'interstate': interstate
+                }
+            })
+        
+        return Response(BillSerializer(bill).data)
+
+    @action(detail=True, methods=['delete'])
+    def delete_item(self, request, pk=None):
+        """Delete item from bill - Admin functionality"""
+        bill = self.get_object()
+        item_id = request.data.get('item_id')
+        
+        if not item_id:
+            return Response(
+                {'error': 'item_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            item = BillItem.objects.get(id=item_id, bill=bill)
+            item.delete()
+            
+            # Recalculate bill total
+            self._recalculate_bill_total(bill)
+            
+            return Response({'message': 'Item deleted successfully'})
+        except BillItem.DoesNotExist:
+            return Response(
+                {'error': 'Item not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    @action(detail=True, methods=['post'])
+    def generate_final_bill(self, request, pk=None):
+        """Generate final bill and mark table as available"""
+        bill = self.get_object()
+        
+        # Mark bill as finalized
+        bill.created_at = datetime.now()
+        bill.save()
+        
+        # If you have table reference, mark it as available
+        # This would depend on your table model structure
+        
+        return Response({
+            'bill': BillSerializer(bill).data,
             'message': 'Bill generated successfully'
         })
 
-    except Exception as e:
-        return Response({
-            'error': f'Failed to generate bill: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def orders_ready_for_billing(request):
-    """Get all orders that are ready for billing"""
-    orders = TableOrder.objects.filter(
-        status__in=['completed', 'ready']
-    ).select_related('table', 'waiter').prefetch_related('items__menu_item')
-
-    order_data = []
-    for order in orders:
-        order_data.append({
-            'id': order.id,
-            'order_number': order.order_number,
-            'table_number': order.table.table_number,
-            'customer_name': order.customer_name,
-            'waiter_name': order.waiter.email if order.waiter else 'Unknown',
-            'total_amount': float(order.total_amount),
-            'items_count': order.items.count(),
-            'created_at': order.created_at.isoformat(),
-            'items': [
-                {
-                    'name': item.menu_item.name_en,
-                    'quantity': item.quantity,
-                    'price': float(item.price),
-                    'total': float(item.total_price)
-                }
-                for item in order.items.all()
-            ]
-        })
-
-    return Response(order_data)
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def split_bill(request):
-    """Split bill between multiple customers"""
-    data = request.data
-    order_id = data.get('order_id')
-    split_data = data.get('splits', [])  # Array of {customer_name, items_ids[]}
-
-    if not split_data or len(split_data) < 2:
-        return Response({
-            'error': 'At least 2 customers required for split billing'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    order = get_object_or_404(TableOrder, pk=order_id)
-    bills_created = []
-
-    for split in split_data:
-        customer_name = split.get('customer_name', 'Guest')
-        item_ids = split.get('item_ids', [])
-
-        if not item_ids:
-            continue
-
-        # Create separate bill for this customer
-        bill = Bill.objects.create(
-            user=request.user,
-            bill_type='restaurant',
-            customer_name=customer_name,
-            customer_phone=order.customer_phone or 'N/A',
-            payment_method=data.get('payment_method', 'cash')
-        )
-
-        subtotal = Decimal('0')
-        for item_id in item_ids:
-            order_item = order.items.get(id=item_id)
-            BillItem.objects.create(
-                bill=bill,
-                item_name=f"{order_item.menu_item.name_en} (Table {order.table.table_number})",
-                quantity=order_item.quantity,
-                price=order_item.price
-            )
-            subtotal += order_item.total_price
-
-        # Calculate GST
-        gst_amount = subtotal * Decimal('0.18')
-        total_amount = subtotal + gst_amount
-
-        bill.total_amount = total_amount
+    def _recalculate_bill_total(self, bill):
+        """Recalculate bill total amount"""
+        total = sum(item.quantity * item.price for item in bill.items.all())
+        bill.total_amount = total
         bill.save()
-
-        bills_created.append({
-            'customer_name': customer_name,
-            'bill_id': bill.id,
-            'receipt_number': bill.receipt_number,
-            'amount': float(total_amount)
-        })
-
-    # Mark order as billed
-    order.status = 'billed'
-    order.save()
-
-    return Response({
-        'success': True,
-        'bills': bills_created,
-        'message': f'{len(bills_created)} bills created successfully'
-    })

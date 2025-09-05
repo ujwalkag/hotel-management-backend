@@ -19,5 +19,9 @@ urlpatterns = [
     path('api/tables/', include('apps.tables.urls')),
     # MOBILE WAITER ROUTES - ADDED
     path('api/tables/mobile/', include('apps.tables.mobile_urls')),
+    path('api/kitchen/', include('apps.kitchen.urls')),  # NEW - Kitchen system
+    # Enhanced routes
+    path('api/bills/enhanced/', include('apps.bills.enhanced_urls')),  # Enhanced billing
+    path('api/tables/mobile/', include('apps.tables.mobile_urls')),     # Mobile ordering
 ]
 

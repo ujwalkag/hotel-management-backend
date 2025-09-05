@@ -1,124 +1,199 @@
-
-# WAITER MOBILE API
-
-# apps/tables/mobile_views.py - Mobile Waiter API Views
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from .models import RestaurantTable, TableOrder, OrderItem
-from .serializers import MobileTableSerializer, MobileOrderSerializer
-from apps.menu.models import MenuItem
+from datetime import datetime
 
-class MobileWaiterViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+from .models import Table
+from .serializers import TableSerializer
+from apps.menu.models import MenuItem, MenuCategory
+from apps.menu.serializers import MenuItemSerializer, MenuCategorySerializer
+from apps.bills.models import Bill, BillItem
 
+class MobileOrderingViewSet(viewsets.ViewSet):
+    """Mobile Ordering System for Waiters/Staff"""
+    
     @action(detail=False, methods=['get'])
-    def tables_layout(self, request):
-        """Get all tables with their current status for mobile layout"""
-        tables = RestaurantTable.objects.all().order_by('table_number')
-        serializer = MobileTableSerializer(tables, many=True)
-        return Response(serializer.data)
-
-    @action(detail=True, methods=['get'])
-    def table_details(self, request, pk=None):
-        """Get specific table details including current orders"""
-        table = get_object_or_404(RestaurantTable, pk=pk)
-        current_order = table.current_order
-
-        data = {
-            'table': MobileTableSerializer(table).data,
-            'current_order': MobileOrderSerializer(current_order).data if current_order else None,
-        }
-        return Response(data)
-
+    def available_tables(self, request):
+        """Get all available tables for ordering"""
+        tables = Table.objects.filter(is_active=True)
+        return Response(TableSerializer(tables, many=True).data)
+    
+    @action(detail=False, methods=['get'])
+    def menu_for_ordering(self, request):
+        """Get complete menu with categories for mobile ordering"""
+        categories = MenuCategory.objects.all()
+        menu_data = []
+        
+        for category in categories:
+            items = MenuItem.objects.filter(category=category, available=True)
+            menu_data.append({
+                'category': MenuCategorySerializer(category).data,
+                'items': MenuItemSerializer(items, many=True).data
+            })
+        
+        return Response(menu_data)
+    
     @action(detail=False, methods=['post'])
-    def create_order(self, request):
-        """Create new order for a table"""
-        data = request.data
-        table_id = data.get('table_id')
-        items = data.get('items', [])
-
-        if not items:
-            return Response({'error': 'No items provided'}, status=status.HTTP_400_BAD_REQUEST)
-
-        table = get_object_or_404(RestaurantTable, pk=table_id)
-
-        # Create order
-        order = TableOrder.objects.create(
-            table=table,
-            waiter=request.user,
-            customer_name=data.get('customer_name', 'Guest'),
-            customer_phone=data.get('customer_phone', ''),
-            customer_count=data.get('customer_count', 1),
-            special_instructions=data.get('special_instructions', '')
+    def create_table_order(self, request):
+        """Create new order for specific table"""
+        table_id = request.data.get('table_id')
+        items = request.data.get('items', [])  # [{'item_id': 1, 'quantity': 2}, ...]
+        customer_name = request.data.get('customer_name', 'Walk-in Customer')
+        
+        if not table_id or not items:
+            return Response(
+                {'error': 'table_id and items are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            table = Table.objects.get(id=table_id)
+        except Table.DoesNotExist:
+            return Response(
+                {'error': 'Table not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Create bill for the order
+        bill = Bill.objects.create(
+            user=request.user,
+            bill_type='restaurant',
+            customer_name=f"Table {table.table_number} - {customer_name}",
+            customer_phone=request.data.get('customer_phone', 'N/A'),
+            total_amount=0
         )
-
-        # Add order items
+        
+        # Add items to bill
         total_amount = 0
         for item_data in items:
-            menu_item = get_object_or_404(MenuItem, pk=item_data['menu_item_id'])
-
-            order_item = OrderItem.objects.create(
-                table_order=order,
-                menu_item=menu_item,
-                quantity=item_data['quantity'],
-                price=menu_item.price,
-                special_instructions=item_data.get('special_instructions', '')
-            )
-            total_amount += order_item.total_price
-
-        # Update order total and table status
-        order.total_amount = total_amount
-        order.save()
-
-        table.is_occupied = True
+            try:
+                menu_item = MenuItem.objects.get(id=item_data['item_id'])
+                quantity = item_data['quantity']
+                
+                BillItem.objects.create(
+                    bill=bill,
+                    item_name=menu_item.name_en,  # Using English name
+                    quantity=quantity,
+                    price=menu_item.price
+                )
+                
+                total_amount += menu_item.price * quantity
+            except MenuItem.DoesNotExist:
+                continue
+        
+        # Update bill total
+        bill.total_amount = total_amount
+        bill.save()
+        
+        # Mark table as occupied (if not already)
+        table.status = 'occupied'
         table.save()
-
+        
         return Response({
-            'success': True,
-            'order': MobileOrderSerializer(order).data,
-            'message': 'Order created successfully'
+            'message': 'Order created successfully',
+            'bill_id': bill.id,
+            'receipt_number': bill.receipt_number,
+            'total_amount': bill.total_amount,
+            'table_number': table.table_number
         })
-
+    
     @action(detail=False, methods=['post'])
-    def add_items_to_order(self, request):
-        """Add additional items to existing order"""
-        data = request.data
-        order_id = data.get('order_id')
-        items = data.get('items', [])
-
-        order = get_object_or_404(TableOrder, pk=order_id)
-
-        for item_data in items:
-            menu_item = get_object_or_404(MenuItem, pk=item_data['menu_item_id'])
-
-            OrderItem.objects.create(
-                table_order=order,
-                menu_item=menu_item,
-                quantity=item_data['quantity'],
-                price=menu_item.price,
-                special_instructions=item_data.get('special_instructions', '')
+    def add_items_to_existing_order(self, request):
+        """Add more items to existing table order"""
+        table_id = request.data.get('table_id')
+        items = request.data.get('items', [])
+        
+        if not table_id or not items:
+            return Response(
+                {'error': 'table_id and items are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Recalculate total
-        order.calculate_total()
-
-        return Response({
-            'success': True,
-            'order': MobileOrderSerializer(order).data,
-            'message': 'Items added successfully'
-        })
-
-    @action(detail=False, methods=['get'])
-    def my_orders(self, request):
-        """Get orders assigned to current waiter"""
-        orders = TableOrder.objects.filter(
-            waiter=request.user,
-            status__in=['pending', 'in_progress']
-        ).order_by('-created_at')
-
-        serializer = MobileOrderSerializer(orders, many=True)
-        return Response(serializer.data)
-
+        
+        # Find latest bill for this table
+        try:
+            table = Table.objects.get(id=table_id)
+            latest_bill = Bill.objects.filter(
+                customer_name__contains=f"Table {table.table_number}"
+            ).order_by('-created_at').first()
+            
+            if not latest_bill:
+                return Response(
+                    {'error': 'No active order found for this table'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Add new items
+            additional_amount = 0
+            for item_data in items:
+                try:
+                    menu_item = MenuItem.objects.get(id=item_data['item_id'])
+                    quantity = item_data['quantity']
+                    
+                    BillItem.objects.create(
+                        bill=latest_bill,
+                        item_name=menu_item.name_en,
+                        quantity=quantity,
+                        price=menu_item.price
+                    )
+                    
+                    additional_amount += menu_item.price * quantity
+                except MenuItem.DoesNotExist:
+                    continue
+            
+            # Update bill total
+            latest_bill.total_amount += additional_amount
+            latest_bill.save()
+            
+            return Response({
+                'message': 'Items added successfully',
+                'bill_id': latest_bill.id,
+                'new_total': latest_bill.total_amount,
+                'added_amount': additional_amount
+            })
+            
+        except Table.DoesNotExist:
+            return Response(
+                {'error': 'Table not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=True, methods=['get'])
+    def table_current_orders(self, request, pk=None):
+        """Get current orders for a specific table"""
+        try:
+            table = Table.objects.get(id=pk)
+            bills = Bill.objects.filter(
+                customer_name__contains=f"Table {table.table_number}"
+            ).order_by('-created_at')
+            
+            orders_data = []
+            for bill in bills:
+                items = bill.items.all()
+                orders_data.append({
+                    'bill_id': bill.id,
+                    'receipt_number': bill.receipt_number,
+                    'total_amount': bill.total_amount,
+                    'created_at': bill.created_at,
+                    'items': [
+                        {
+                            'name': item.item_name,
+                            'quantity': item.quantity,
+                            'price': item.price,
+                            'total': item.quantity * item.price
+                        }
+                        for item in items
+                    ]
+                })
+            
+            return Response({
+                'table_number': table.table_number,
+                'table_status': getattr(table, 'status', 'available'),
+                'orders': orders_data
+            })
+            
+        except Table.DoesNotExist:
+            return Response(
+                {'error': 'Table not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )

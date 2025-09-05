@@ -1,75 +1,217 @@
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
-from .models import PayrollStaff
-import uuid
+from django.db.models import Q, Sum, Avg
+from datetime import datetime, date, timedelta
+from .models import StaffProfile, Attendance, Payroll
+from .serializers import StaffProfileSerializer, AttendanceSerializer, PayrollSerializer
+from apps.users.models import CustomUser
 
-# ADD THESE FUNCTIONS AT THE END OF apps/staff/views.py
+class StaffProfileViewSet(viewsets.ModelViewSet):
+    """FIXED - Complete Staff Profile Management ViewSet"""
+    queryset = StaffProfile.objects.all()
+    serializer_class = StaffProfileSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = StaffProfile.objects.all()
+        department = self.request.query_params.get('department')
+        is_active = self.request.query_params.get('is_active')
+        
+        if department:
+            queryset = queryset.filter(department=department)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+            
+        return queryset.order_by('-created_at')
+    
+    @action(detail=True, methods=['get'])
+    def attendance_summary(self, request, pk=None):
+        """Get attendance summary for staff member"""
+        staff = self.get_object()
+        month = request.query_params.get('month', datetime.now().month)
+        year = request.query_params.get('year', datetime.now().year)
+        
+        attendances = Attendance.objects.filter(
+            staff=staff,
+            date__month=month,
+            date__year=year
+        )
+        
+        summary = {
+            'staff_id': staff.id,
+            'staff_name': staff.name,
+            'month': month,
+            'year': year,
+            'total_days': attendances.count(),
+            'present_days': attendances.filter(status='present').count(),
+            'absent_days': attendances.filter(status='absent').count(),
+            'late_days': attendances.filter(status='late').count(),
+            'total_hours': sum([att.total_hours for att in attendances if att.total_hours]),
+            'overtime_hours': sum([att.overtime_hours for att in attendances if att.overtime_hours]),
+        }
+        
+        return Response(summary)
+    
+    @action(detail=True, methods=['get'])
+    def payroll_history(self, request, pk=None):
+        """Get payroll history for staff member"""
+        staff = self.get_object()
+        payrolls = Payroll.objects.filter(staff=staff).order_by('-year', '-month')[:12]
+        serializer = PayrollSerializer(payrolls, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def department_stats(self, request):
+        """Get staff statistics by department"""
+        from django.db.models import Count
+        
+        stats = StaffProfile.objects.values('department').annotate(
+            total=Count('id'),
+            active=Count('id', filter=Q(is_active=True))
+        ).order_by('department')
+        
+        return Response(list(stats))
 
-@api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
-def payroll_staff_management(request):
-    """Separate payroll staff management (not linked to base users)"""
+class AttendanceViewSet(viewsets.ModelViewSet):
+    """Attendance Management ViewSet"""
+    queryset = Attendance.objects.all()
+    serializer_class = AttendanceSerializer
+    permission_classes = [IsAuthenticated]
     
-    if request.method == 'GET':
-        # Get all payroll staff
-        payroll_staff = PayrollStaff.objects.all().order_by('-created_at')
+    def get_queryset(self):
+        queryset = Attendance.objects.all()
+        staff_id = self.request.query_params.get('staff_id')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
         
-        staff_data = []
-        for staff in payroll_staff:
-            staff_data.append({
-                'id': staff.id,
-                'full_name': staff.full_name,
-                'phone': staff.phone,
-                'employee_id': staff.employee_id,
-                'department': staff.department,
-                'position': staff.position,
-                'base_salary': float(staff.base_salary),
-                'hourly_rate': float(staff.hourly_rate),
-                'created_at': staff.created_at.isoformat()
-            })
-        
-        return Response(staff_data)
+        if staff_id:
+            queryset = queryset.filter(staff_id=staff_id)
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+            
+        return queryset.order_by('-date')
     
-    elif request.method == 'POST':
-        # Create new payroll staff
-        data = request.data
+    @action(detail=False, methods=['post'])
+    def mark_attendance(self, request):
+        """Quick attendance marking for mobile interface"""
+        staff_id = request.data.get('staff_id')
+        action_type = request.data.get('action')  # 'check_in' or 'check_out'
+        
+        if not staff_id or not action_type:
+            return Response(
+                {'error': 'staff_id and action are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         try:
-            payroll_staff = PayrollStaff.objects.create(
-                full_name=data['full_name'],
-                phone=data['phone'],
-                department=data.get('department', 'service'),
-                position=data.get('position', ''),
-                base_salary=data.get('base_salary', 0),
-                hourly_rate=data.get('hourly_rate', 0),
-                created_by=request.user
+            staff = StaffProfile.objects.get(id=staff_id)
+        except StaffProfile.DoesNotExist:
+            return Response(
+                {'error': 'Staff not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        today = datetime.now().date()
+        current_time = datetime.now().time()
+        
+        attendance, created = Attendance.objects.get_or_create(
+            staff=staff,
+            date=today,
+            defaults={'status': 'present'}
+        )
+        
+        if action_type == 'check_in':
+            attendance.check_in = current_time
+            attendance.status = 'present'
+        elif action_type == 'check_out':
+            attendance.check_out = current_time
+            attendance.calculate_hours()
+        
+        attendance.save()
+        serializer = AttendanceSerializer(attendance)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def today_report(self, request):
+        """Get today's attendance report"""
+        today = date.today()
+        attendances = Attendance.objects.filter(date=today)
+        
+        report = {
+            'date': today,
+            'total_staff': StaffProfile.objects.filter(is_active=True).count(),
+            'checked_in': attendances.filter(check_in__isnull=False).count(),
+            'present': attendances.filter(status='present').count(),
+            'absent': attendances.filter(status='absent').count(),
+            'late': attendances.filter(status='late').count(),
+            'attendances': AttendanceSerializer(attendances, many=True).data
+        }
+        
+        return Response(report)
+
+class PayrollViewSet(viewsets.ModelViewSet):
+    """Payroll Management ViewSet"""
+    queryset = Payroll.objects.all()
+    serializer_class = PayrollSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = Payroll.objects.all()
+        staff_id = self.request.query_params.get('staff_id')
+        month = self.request.query_params.get('month')
+        year = self.request.query_params.get('year')
+        
+        if staff_id:
+            queryset = queryset.filter(staff_id=staff_id)
+        if month:
+            queryset = queryset.filter(month=month)
+        if year:
+            queryset = queryset.filter(year=year)
+            
+        return queryset.order_by('-year', '-month')
+    
+    @action(detail=False, methods=['post'])
+    def generate_monthly_payroll(self, request):
+        """Generate payroll for all active staff for given month"""
+        month = request.data.get('month', datetime.now().month)
+        year = request.data.get('year', datetime.now().year)
+        
+        staff_members = StaffProfile.objects.filter(is_active=True)
+        generated_payrolls = []
+        
+        for staff in staff_members:
+            payroll, created = Payroll.objects.get_or_create(
+                staff=staff,
+                month=month,
+                year=year,
+                defaults={
+                    'basic_amount': staff.basic_salary,
+                    'net_amount': staff.basic_salary
+                }
             )
             
-            return Response({
-                'success': True,
-                'message': 'Payroll staff created',
-                'staff_id': payroll_staff.id
-            })
-            
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def delete_payroll_staff(request, staff_id):
-    """Delete payroll staff member"""
-    try:
-        staff = get_object_or_404(PayrollStaff, id=staff_id)
-        staff_name = staff.full_name
-        staff.delete()
+            if created or not payroll.is_paid:
+                payroll.calculate_payroll()
+                generated_payrolls.append(payroll)
         
+        serializer = PayrollSerializer(generated_payrolls, many=True)
         return Response({
-            'success': True,
-            'message': f'{staff_name} deleted successfully'
+            'message': f'Generated payroll for {len(generated_payrolls)} staff members',
+            'payrolls': serializer.data
         })
+    
+    @action(detail=True, methods=['post'])
+    def mark_paid(self, request, pk=None):
+        """Mark payroll as paid"""
+        payroll = self.get_object()
+        payroll.is_paid = True
+        payroll.payment_date = datetime.now().date()
+        payroll.save()
         
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        serializer = PayrollSerializer(payroll)
+        return Response(serializer.data)
