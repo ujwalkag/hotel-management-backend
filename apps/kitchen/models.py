@@ -1,11 +1,12 @@
+# apps/kitchen/models.py - FIXED VERSION
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
-from apps.bills.models import Bill, BillItem
-from apps.tables.models import Table
+from apps.bills.models import Bill
+from apps.tables.models import RestaurantTable  # FIXED: Import RestaurantTable, not Table
 from django.utils import timezone
 
 class KitchenOrder(models.Model):
-    """Kitchen order management"""
+    """Kitchen orders from restaurant bills"""
     STATUS_CHOICES = [
         ('received', 'Order Received'),
         ('preparing', 'Preparing'),
@@ -22,25 +23,26 @@ class KitchenOrder(models.Model):
     ]
 
     bill = models.OneToOneField(Bill, on_delete=models.CASCADE, related_name='kitchen_order')
+    table = models.ForeignKey(RestaurantTable, on_delete=models.SET_NULL, null=True, blank=True)  # FIXED: RestaurantTable
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='received')
     priority = models.IntegerField(choices=PRIORITY_CHOICES, default=2)
-    estimated_time = models.IntegerField(help_text="Estimated preparation time in minutes", default=30)
+    estimated_time = models.IntegerField(default=30, help_text="Estimated time in minutes")
     actual_prep_time = models.IntegerField(null=True, blank=True)
     
-    # Kitchen staff assignment
+    # Kitchen staff
     assigned_chef = models.CharField(max_length=100, blank=True)
     
-    # Timing information
+    # Timestamps
     received_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
+    ready_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)
     
-    # Additional information
-    kitchen_notes = models.TextField(blank=True)
+    # Special instructions
     special_instructions = models.TextField(blank=True)
+    kitchen_notes = models.TextField(blank=True)
     
-    # Audio alert settings
+    # Audio alerts
     audio_played = models.BooleanField(default=False)
     audio_acknowledged = models.BooleanField(default=False)
     
@@ -49,122 +51,73 @@ class KitchenOrder(models.Model):
 
     class Meta:
         db_table = 'kitchen_orders'
-        verbose_name = 'Kitchen Order'
-        verbose_name_plural = 'Kitchen Orders'
         ordering = ['priority', 'received_at']
 
     def __str__(self):
-        return f"Kitchen Order {self.bill.receipt_number} - {self.get_status_display()}"
+        table_info = "Takeaway"
+        if self.table:
+            table_info = f"Table {self.table.table_number}"
+        elif 'Table' in self.bill.customer_name:
+            table_info = self.bill.customer_name.split(' - ')[0]
+        return f"{self.bill.receipt_number} - {table_info} - {self.get_status_display()}"
 
-    def start_preparation(self):
-        """Mark order as being prepared"""
+    @property
+    def table_number(self):
+        """Get table number for kitchen display"""
+        if self.table:
+            return self.table.table_number
+        elif 'Table' in self.bill.customer_name:
+            return self.bill.customer_name.split('Table ')[1].split(' -')[0]
+        return "Takeaway"
+
+    def start_preparation(self, chef_name=''):
         if self.status == 'received':
             self.status = 'preparing'
             self.started_at = timezone.now()
+            self.assigned_chef = chef_name
+            self.audio_acknowledged = True
             self.save()
 
     def mark_ready(self):
-        """Mark order as ready to serve"""
         if self.status == 'preparing':
             self.status = 'ready'
-            self.completed_at = timezone.now()
+            self.ready_at = timezone.now()
             
-            # Calculate actual prep time
             if self.started_at:
-                prep_time = (self.completed_at - self.started_at).total_seconds() / 60
+                prep_time = (self.ready_at - self.started_at).total_seconds() / 60
                 self.actual_prep_time = int(prep_time)
             
             self.save()
 
     def mark_served(self):
-        """Mark order as served"""
+        """Mark order as served and make table available"""
         if self.status == 'ready':
             self.status = 'served'
             self.served_at = timezone.now()
+            
+            # Mark table as available when order is served
+            if self.table:
+                self.table.release_table()
+                
             self.save()
 
-class KitchenItemStatus(models.Model):
-    """Track individual item preparation status"""
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('preparing', 'Preparing'),
-        ('ready', 'Ready'),
-        ('served', 'Served'),
-    ]
-
-    kitchen_order = models.ForeignKey(KitchenOrder, on_delete=models.CASCADE, related_name='item_status')
-    bill_item = models.OneToOneField(BillItem, on_delete=models.CASCADE, related_name='kitchen_status')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    preparation_notes = models.TextField(blank=True)
-    estimated_time = models.IntegerField(default=15, help_text="Time in minutes")
-    actual_time = models.IntegerField(null=True, blank=True, help_text="Actual time in minutes")
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'kitchen_item_status'
-        verbose_name = 'Kitchen Item Status'
-        verbose_name_plural = 'Kitchen Item Status'
-
-    def __str__(self):
-        return f"{self.bill_item.item_name} - {self.get_status_display()}"
-
-    def start_preparation(self):
-        """Start preparing this item"""
-        self.status = 'preparing'
-        self.started_at = timezone.now()
-        self.save()
-
-    def mark_ready(self):
-        """Mark this item as ready"""
-        self.status = 'ready'
-        self.completed_at = timezone.now()
-        
-        if self.started_at:
-            prep_time = (self.completed_at - self.started_at).total_seconds() / 60
-            self.actual_time = int(prep_time)
-        
-        self.save()
-        
-        # Check if all items in the order are ready
-        kitchen_order = self.kitchen_order
-        all_items_ready = all(
-            item.status == 'ready' 
-            for item in kitchen_order.item_status.all()
-        )
-        
-        if all_items_ready and kitchen_order.status == 'preparing':
-            kitchen_order.mark_ready()
-
 class AudioAlert(models.Model):
-    """Audio alert configurations for kitchen notifications"""
-    ALERT_TYPE_CHOICES = [
-        ('new_order', 'New Order Alert'),
-        ('priority_order', 'Priority Order Alert'),
-        ('order_ready', 'Order Ready Alert'),
-        ('kitchen_timer', 'Kitchen Timer Alert'),
+    """Kitchen audio alert settings"""
+    ALERT_TYPES = [
+        ('new_order', 'New Order'),
+        ('order_ready', 'Order Ready'),
+        ('priority_order', 'Priority Order'),
     ]
 
-    alert_type = models.CharField(max_length=20, choices=ALERT_TYPE_CHOICES)
     name = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
+    alert_type = models.CharField(max_length=20, choices=ALERT_TYPES)
     audio_file = models.FileField(upload_to='kitchen_audio/', null=True, blank=True)
-    text_to_speech = models.TextField(blank=True, help_text="Text to be converted to speech")
-    volume = models.IntegerField(default=80, validators=[MinValueValidator(0), MaxValueValidator(100)])
-    repeat_count = models.IntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(5)])
-    repeat_interval = models.IntegerField(default=5, help_text="Seconds between repeats")
     is_active = models.BooleanField(default=True)
-    priority = models.IntegerField(default=1, help_text="Higher number = higher priority")
+    volume = models.IntegerField(default=80, validators=[MinValueValidator(0), MaxValueValidator(100)])
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'kitchen_audio_alerts'
-        verbose_name = 'Audio Alert'
-        verbose_name_plural = 'Audio Alerts'
-        ordering = ['-priority', 'alert_type']
 
     def __str__(self):
-        return f"{self.name} ({self.get_alert_type_display()})"
+        return f"{self.name} - {self.get_alert_type_display()}"

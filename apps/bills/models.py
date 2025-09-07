@@ -1,6 +1,7 @@
 from django.db import models
 from apps.users.models import CustomUser
 from apps.rooms.models import Room
+from apps.tables.models import RestaurantTable
 from hashlib import md5
 from datetime import datetime
 
