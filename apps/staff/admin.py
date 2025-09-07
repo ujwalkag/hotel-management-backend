@@ -1,7 +1,7 @@
 # apps/staff/admin.py - FINAL CORRECTED VERSION (EXACT FIELD MATCH)
 from django.contrib import admin
 from django.utils import timezone
-from .models import StaffProfile, AttendanceRecord, AdvancePayment
+from .models import StaffProfile
 
 @admin.register(StaffProfile)
 class StaffProfileAdmin(admin.ModelAdmin):

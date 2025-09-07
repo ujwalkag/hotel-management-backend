@@ -1,8 +1,11 @@
-# apps/bills/enhanced_urls.py - Enhanced Billing URLs  
 from django.urls import path
-from .views import get_orders_ready_for_billing, generate_bill_from_order
+from .enhanced_views import EnhancedBillingViewSet
 
-enhanced_billing_urls = [
-    path('orders_ready_for_billing/', get_orders_ready_for_billing, name='orders-ready-billing'),
-    path('generate_bill_from_order/', generate_bill_from_order, name='generate-bill-from-order'),
+urlpatterns = [
+    path('dashboard/', EnhancedBillingViewSet.as_view({'get': 'active_tables_dashboard'}), name='billing-dashboard'),
+    path('create-table-bill/', EnhancedBillingViewSet.as_view({'post': 'create_table_bill'}), name='create-table-bill'),
+    path('add-item/', EnhancedBillingViewSet.as_view({'post': 'add_item_to_bill'}), name='add-bill-item'),
+    path('apply-gst/', EnhancedBillingViewSet.as_view({'post': 'apply_gst_to_bill'}), name='apply-gst'),
+    path('delete-item/', EnhancedBillingViewSet.as_view({'delete': 'delete_bill_item'}), name='delete-bill-item'),
+    path('finalize-bill/', EnhancedBillingViewSet.as_view({'post': 'finalize_bill_and_release_table'}), name='finalize-bill'),
 ]

@@ -1,84 +1,116 @@
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
+
+# apps/staff/models.py - COMPLETELY UPDATED FOR SEPARATE STAFF MANAGEMENT
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
-from apps.users.models import CustomUser
-from datetime import datetime, timedelta
+from decimal import Decimal
+from datetime import date, datetime
+import uuid
 
 class StaffProfile(models.Model):
-    """Staff Profile separate from User authentication"""
+    """
+    Separate staff management - NOT linked to base users
+    This is for attendance and payroll only
+    """
     DEPARTMENT_CHOICES = [
         ('kitchen', 'Kitchen'),
         ('service', 'Service'),
+        ('housekeeping', 'Housekeeping'), 
         ('management', 'Management'),
-        ('housekeeping', 'Housekeeping'),
-        ('reception', 'Reception'),
         ('billing', 'Billing'),
+        ('security', 'Security'),
     ]
 
-    EMPLOYMENT_TYPE_CHOICES = [
-        ('full_time', 'Full Time'),
-        ('part_time', 'Part Time'),
-        ('contract', 'Contract'),
-        ('casual', 'Casual'),
+    EMPLOYMENT_STATUS_CHOICES = [
+        ('active', 'Active'),
+        ('inactive', 'Inactive'),
+        ('terminated', 'Terminated'),
+        ('on_leave', 'On Leave'),
     ]
 
     # Basic Information
-    name = models.CharField(max_length=100)
-    employee_id = models.CharField(max_length=20, unique=True)
+    employee_id = models.CharField(max_length=20, unique=True, blank=True)
+    full_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=15, blank=True)
+    address = models.TextField(blank=True)
     department = models.CharField(max_length=20, choices=DEPARTMENT_CHOICES)
-    position = models.CharField(max_length=50)
-    employment_type = models.CharField(max_length=20, choices=EMPLOYMENT_TYPE_CHOICES)
+    position = models.CharField(max_length=100)
 
-    # Salary Information
-    basic_salary = models.DecimalField(max_digits=10, decimal_places=2)
-    hourly_rate = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
-
-    # Personal Information
+    # Employment Details
     hire_date = models.DateField()
-    phone = models.CharField(max_length=15)
-    email = models.EmailField()
-    address = models.TextField()
-    emergency_contact = models.CharField(max_length=100, blank=True)
-    emergency_phone = models.CharField(max_length=15, blank=True)
+    employment_status = models.CharField(max_length=20, choices=EMPLOYMENT_STATUS_CHOICES, default='active')
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    hourly_rate = models.DecimalField(max_digits=6, decimal_places=2, default=0)
 
-    # Status
-    is_active = models.BooleanField(default=True)
+    # Additional Information
+    emergency_contact = models.CharField(max_length=255, blank=True)
+    emergency_phone = models.CharField(max_length=15, blank=True)
+    notes = models.TextField(blank=True)
+
+    # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.employee_id:
+            # Generate unique employee ID
+            prefix = self.department[:3].upper()
+            random_id = str(uuid.uuid4().hex[:6]).upper()
+            self.employee_id = f"{prefix}-{random_id}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.full_name} ({self.employee_id})"
 
     class Meta:
         db_table = 'staff_profiles'
         verbose_name = 'Staff Profile'
         verbose_name_plural = 'Staff Profiles'
-        ordering = ['name']
+        ordering = ['full_name']
 
-    def __str__(self):
-        return f"{self.name} - {self.employee_id}"
-
-class Attendance(models.Model):
-    """Daily attendance tracking"""
+class AttendanceRecord(models.Model):
+    """Daily attendance tracking for staff"""
     STATUS_CHOICES = [
         ('present', 'Present'),
         ('absent', 'Absent'),
         ('half_day', 'Half Day'),
-        ('late', 'Late'),
+        ('leave', 'Leave'),
         ('holiday', 'Holiday'),
-        ('sick_leave', 'Sick Leave'),
-        ('vacation', 'Vacation'),
     ]
 
-    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name='attendances')
+    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name='attendance_records')
     date = models.DateField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
     check_in = models.TimeField(null=True, blank=True)
     check_out = models.TimeField(null=True, blank=True)
-    break_hours = models.DecimalField(max_digits=4, decimal_places=2, default=0)
     total_hours = models.DecimalField(max_digits=4, decimal_places=2, default=0)
     overtime_hours = models.DecimalField(max_digits=4, decimal_places=2, default=0)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='present')
     notes = models.TextField(blank=True)
-    approved_by = models.CharField(max_length=100, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+
+    def calculate_hours(self):
+        """Calculate total and overtime hours"""
+        if self.check_in and self.check_out:
+            # Convert to datetime for calculation
+            checkin_dt = datetime.combine(self.date, self.check_in)
+            checkout_dt = datetime.combine(self.date, self.check_out)
+
+            # Handle next day checkout
+            if checkout_dt < checkin_dt:
+                checkout_dt = checkout_dt.replace(day=checkout_dt.day + 1)
+
+            total_minutes = (checkout_dt - checkin_dt).total_seconds() / 60
+            self.total_hours = Decimal(total_minutes / 60)
+
+            # Calculate overtime (more than 8 hours)
+            if self.total_hours > 8:
+                self.overtime_hours = self.total_hours - 8
+            else:
+                self.overtime_hours = 0
+
+        self.save()
+
+    def __str__(self):
+        return f"{self.staff.full_name} - {self.date} ({self.status})"
 
     class Meta:
         db_table = 'staff_attendance'
@@ -87,56 +119,64 @@ class Attendance(models.Model):
         verbose_name_plural = 'Attendance Records'
         ordering = ['-date']
 
-    def __str__(self):
-        return f"{self.staff.name} - {self.date} - {self.status}"
+class PayrollRecord(models.Model):
+    """Monthly payroll calculation for staff"""
+    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name='payroll_records')
+    month = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(12)])
+    year = models.IntegerField(validators=[MinValueValidator(2020)])
 
-    def calculate_hours(self):
-        """Calculate working hours automatically"""
-        if self.check_in and self.check_out:
-            from datetime import datetime, timedelta
-            check_in_dt = datetime.combine(self.date, self.check_in)
-            check_out_dt = datetime.combine(self.date, self.check_out)
-
-            if check_out_dt < check_in_dt:
-                check_out_dt += timedelta(days=1)
-
-            total_time = check_out_dt - check_in_dt
-            self.total_hours = max(0, (total_time.total_seconds() / 3600) - float(self.break_hours))
-
-            # Calculate overtime (more than 8 hours)
-            regular_hours = 8
-            if self.total_hours > regular_hours:
-                self.overtime_hours = self.total_hours - regular_hours
-            else:
-                self.overtime_hours = 0
-
-            self.save()
-
-class Payroll(models.Model):
-    """Monthly payroll records"""
-    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name='payrolls')
-    month = models.IntegerField()
-    year = models.IntegerField()
-    days_worked = models.IntegerField(default=0)
-    total_hours = models.DecimalField(max_digits=8, decimal_places=2, default=0)
-    overtime_hours = models.DecimalField(max_digits=8, decimal_places=2, default=0)
-    basic_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Salary Components
+    base_salary = models.DecimalField(max_digits=10, decimal_places=2)
     overtime_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     bonus = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    allowances = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     deductions = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    tax_deducted = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    net_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # Attendance Summary
+    total_working_days = models.IntegerField(default=0)
+    days_present = models.IntegerField(default=0)
+    days_absent = models.IntegerField(default=0)
+    total_hours = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    overtime_hours = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+
+    # Final Amounts
+    gross_salary = models.DecimalField(max_digits=10, decimal_places=2)
+    net_salary = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # Payment Information
     payment_date = models.DateField(null=True, blank=True)
-    payment_method = models.CharField(max_length=20, choices=[
-        ('bank_transfer', 'Bank Transfer'),
-        ('cash', 'Cash'),
-        ('check', 'Check'),
-    ], default='bank_transfer')
-    is_paid = models.BooleanField(default=False)
-    notes = models.TextField(blank=True)
+    payment_method = models.CharField(max_length=50, default='cash')
+    payment_status = models.CharField(max_length=20, default='pending')
+
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    notes = models.TextField(blank=True)
+
+    def calculate_payroll(self):
+        """Calculate monthly payroll based on attendance"""
+        # Get attendance records for the month
+        attendance_records = AttendanceRecord.objects.filter(
+            staff=self.staff,
+            date__year=self.year,
+            date__month=self.month
+        )
+
+        self.days_present = attendance_records.filter(status='present').count()
+        self.days_absent = attendance_records.filter(status='absent').count()
+        self.total_hours = sum([record.total_hours for record in attendance_records])
+        self.overtime_hours = sum([record.overtime_hours for record in attendance_records])
+
+        # Calculate overtime amount
+        self.overtime_amount = self.overtime_hours * self.staff.hourly_rate * Decimal('1.5')
+
+        # Calculate gross salary
+        self.gross_salary = self.base_salary + self.overtime_amount + self.bonus
+
+        # Calculate net salary
+        self.net_salary = self.gross_salary - self.deductions
+
+        self.save()
+
+    def __str__(self):
+        return f"{self.staff.full_name} - {self.month}/{self.year}"
 
     class Meta:
         db_table = 'staff_payroll'
@@ -145,39 +185,43 @@ class Payroll(models.Model):
         verbose_name_plural = 'Payroll Records'
         ordering = ['-year', '-month']
 
+class LeaveRequest(models.Model):
+    """Leave request management"""
+    LEAVE_TYPE_CHOICES = [
+        ('casual', 'Casual Leave'),
+        ('sick', 'Sick Leave'), 
+        ('annual', 'Annual Leave'),
+        ('emergency', 'Emergency Leave'),
+    ]
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    staff = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name='leave_requests')
+    leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    total_days = models.IntegerField()
+    reason = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    approved_by = models.CharField(max_length=255, blank=True)
+    rejection_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        # Calculate total days
+        self.total_days = (self.end_date - self.start_date).days + 1
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.staff.name} - {self.month}/{self.year} - ${self.net_amount}"
+        return f"{self.staff.full_name} - {self.leave_type} ({self.start_date} to {self.end_date})"
 
-    def calculate_payroll(self):
-        """Calculate payroll based on attendance"""
-        from django.db.models import Sum
+    class Meta:
+        db_table = 'staff_leave_requests'
+        verbose_name = 'Leave Request'
+        verbose_name_plural = 'Leave Requests'
+        ordering = ['-created_at']
 
-        # Get attendance for the month
-        attendances = Attendance.objects.filter(
-            staff=self.staff,
-            date__month=self.month,
-            date__year=self.year,
-            status__in=['present', 'half_day', 'late']
-        )
-
-        self.days_worked = attendances.count()
-        self.total_hours = attendances.aggregate(Sum('total_hours'))['total_hours__sum'] or 0
-        self.overtime_hours = attendances.aggregate(Sum('overtime_hours'))['overtime_hours__sum'] or 0
-
-        # Calculate amounts
-        if self.staff.employment_type in ['full_time', 'part_time']:
-            self.basic_amount = self.staff.basic_salary
-        else:
-            hourly_rate = self.staff.hourly_rate or 0
-            self.basic_amount = float(self.total_hours) * float(hourly_rate)
-
-        # Overtime calculation
-        if self.overtime_hours > 0 and self.staff.hourly_rate:
-            overtime_rate = float(self.staff.hourly_rate) * 1.5
-            self.overtime_amount = float(self.overtime_hours) * overtime_rate
-
-        # Calculate net amount
-        gross_amount = self.basic_amount + self.overtime_amount + self.bonus + self.allowances
-        self.net_amount = gross_amount - self.deductions - self.tax_deducted
-
-        self.save()
