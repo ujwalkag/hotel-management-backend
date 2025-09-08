@@ -2,7 +2,6 @@
 # apps/staff/models.py - COMPLETELY UPDATED FOR SEPARATE STAFF MANAGEMENT
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
-from apps.users.models import CustomUser
 from decimal import Decimal
 from datetime import date, datetime
 import uuid
@@ -29,7 +28,6 @@ class StaffProfile(models.Model):
     ]
 
     # Basic Information
-    user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, null=True, blank=True)
     employee_id = models.CharField(max_length=20, unique=True, blank=True)
     full_name = models.CharField(max_length=255)
     phone = models.CharField(max_length=15, blank=True)
