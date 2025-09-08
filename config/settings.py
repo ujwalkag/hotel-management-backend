@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
-    
+
     'apps.users',
     'apps.menu',
     'apps.rooms',
@@ -177,3 +177,4 @@ ORACLE_SECRET_KEY = os.getenv('ORACLE_SECRET_KEY')
 AUTH_USER_MODEL = 'users.CustomUser'
 # Add inventory app
 INSTALLED_APPS.append('apps.inventory')
+
