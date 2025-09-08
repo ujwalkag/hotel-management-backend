@@ -1,13 +1,17 @@
-# apps/enhanced_billing/models.py
+# Create new Django app: apps/enhanced_billing/
+
+# apps/enhanced_billing/models.py - COMPLETE ENHANCED BILLING WITH GST
 """
 ENHANCED BILLING SYSTEM - GST Compliant with Mobile Order Integration
-COMPATIBLE: Works with existing billing and new mobile ordering
-NO CONFLICTS: Separate database tables from existing Bill model
+- Dynamic integration with mobile orders
+- Professional GST calculations (CGST/SGST/IGST)
+- Multi-payment support (Cash/Card/UPI/Mixed)
+- Session-based billing with detailed receipts
 """
 
 from django.db import models
 from django.utils import timezone
-from apps.users.models import CustomUser  # Your existing user model
+from apps.users.models import CustomUser
 from decimal import Decimal
 import uuid
 
@@ -163,6 +167,13 @@ class EnhancedBill(models.Model):
             # Set table session reference
             self.table_session_id = session_id
 
+            # Set table number and waiter from first order
+            if orders.exists():
+                first_order = orders.first()
+                self.table_number = first_order.table.table_number
+                self.waiter = first_order.waiter
+                self.customer_count = first_order.customer_count
+
             # Calculate totals
             self.calculate_totals()
 
@@ -265,15 +276,6 @@ class EnhancedBill(models.Model):
         except Exception:
             # If session not found, continue without error
             pass
-
-    def cancel_bill(self, reason=""):
-        """Cancel the bill"""
-        if self.status in ['draft', 'ready']:
-            self.status = 'cancelled'
-            self.internal_notes += f" [CANCELLED: {reason}]"
-            self.save()
-            return True
-        return False
 
     def generate_receipt_data(self):
         """Generate structured data for receipt printing"""
@@ -427,18 +429,6 @@ class BillPaymentRecord(models.Model):
 
         super().save(*args, **kwargs)
 
-    def mark_completed(self):
-        """Mark payment as completed"""
-        self.status = 'completed'
-        self.processed_at = timezone.now()
-        self.save()
-
-    def mark_failed(self, reason=""):
-        """Mark payment as failed"""
-        self.status = 'failed'
-        self.notes += f" [FAILED: {reason}]"
-        self.save()
-
     def __str__(self):
         return f"Payment {self.transaction_id} - ₹{self.amount}"
 
@@ -447,63 +437,3 @@ class BillPaymentRecord(models.Model):
         verbose_name = 'Bill Payment Record'
         verbose_name_plural = 'Bill Payment Records'
         ordering = ['-created_at']
-
-class BillingSession(models.Model):
-    """Track billing sessions for analytics and reporting"""
-    biller = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        limit_choices_to={'role__in': ['staff', 'admin']},
-        related_name='enhanced_billing_sessions'
-    )
-
-    # Session details
-    session_start = models.DateTimeField(auto_now_add=True)
-    session_end = models.DateTimeField(null=True, blank=True)
-
-    # Session statistics
-    bills_processed = models.IntegerField(default=0)
-    total_amount_processed = models.DecimalField(max_digits=15, decimal_places=2, default=0)
-    cash_collected = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    card_collected = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    upi_collected = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-
-    # System info
-    device_info = models.JSONField(default=dict, blank=True)
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
-
-    @property
-    def session_duration_minutes(self):
-        """Session duration in minutes"""
-        end_time = self.session_end or timezone.now()
-        return int((end_time - self.session_start).total_seconds() / 60)
-
-    def end_session(self):
-        """End the billing session"""
-        if not self.session_end:
-            self.session_end = timezone.now()
-
-            # Calculate session totals
-            bills = EnhancedBill.objects.filter(
-                processed_by=self.biller,
-                created_at__range=[self.session_start, self.session_end]
-            )
-
-            self.bills_processed = bills.count()
-            self.total_amount_processed = sum(bill.final_amount for bill in bills)
-            self.cash_collected = sum(bill.cash_amount for bill in bills)
-            self.card_collected = sum(bill.card_amount for bill in bills)
-            self.upi_collected = sum(bill.upi_amount for bill in bills)
-
-            self.save()
-
-    def __str__(self):
-        return f"Billing Session - {self.biller.get_full_name() if self.biller else 'Unknown'} ({self.session_start.strftime('%d/%m/%Y %H:%M')})"
-
-    class Meta:
-        db_table = 'enhanced_billing_sessions'
-        verbose_name = 'Billing Session'
-        verbose_name_plural = 'Billing Sessions'
-        ordering = ['-session_start']
-

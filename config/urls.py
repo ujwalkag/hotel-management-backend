@@ -16,12 +16,10 @@ urlpatterns = [
     path('api/inventory/', include('apps.inventory.urls')),
     path('api/notifications/', include('apps.notifications.urls')),
     path('api/staff/', include('apps.staff.urls')),
-    path('api/tables/', include('apps.tables.urls')),
-    # MOBILE WAITER ROUTES - ADDED
-    path('api/tables/mobile/', include('apps.tables.mobile_urls')),
-    path('api/kitchen/', include('apps.kitchen.urls')),  # NEW - Kitchen system
-    # Enhanced routes
-    path('api/bills/enhanced/', include('apps.bills.enhanced_urls')),  # Enhanced billing
-    path('api/tables/mobile/', include('apps.tables.mobile_urls')),     # Mobile ordering
+    # NEW API ENDPOINTS
+    path('api/mobile-orders/', include('apps.mobile_ordering.urls')),
+    path('api/enhanced-billing/', include('apps.enhanced_billing.urls')),
+    #path('api/tables/', include('apps.tables.urls')),
+    
 ]
 

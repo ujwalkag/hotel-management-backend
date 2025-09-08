@@ -1,4 +1,3 @@
-# apps/mobile_ordering/serializers.py
 from rest_framework import serializers
 from .models import RestaurantTable, TableSession, WaiterOrder, WaiterOrderItem, KitchenOrder
 from apps.menu.models import MenuItem
@@ -12,14 +11,19 @@ class RestaurantTableSerializer(serializers.ModelSerializer):
         model = RestaurantTable
         fields = '__all__'
 
-class TableSessionSerializer(serializers.ModelSerializer):
-    duration_minutes = serializers.ReadOnlyField()
+class WaiterOrderSerializer(serializers.ModelSerializer):
+    order_items = serializers.SerializerMethodField()
+    total_items = serializers.ReadOnlyField()
+    wait_time_minutes = serializers.ReadOnlyField()
     table_number = serializers.CharField(source='table.table_number', read_only=True)
-    waiter_name = serializers.CharField(source='assigned_waiter.get_full_name', read_only=True)
+    waiter_name = serializers.CharField(source='waiter.get_full_name', read_only=True)
 
     class Meta:
-        model = TableSession
+        model = WaiterOrder
         fields = '__all__'
+
+    def get_order_items(self, obj):
+        return WaiterOrderItemSerializer(obj.order_items.all(), many=True).data
 
 class WaiterOrderItemSerializer(serializers.ModelSerializer):
     total_price = serializers.ReadOnlyField()
@@ -30,33 +34,24 @@ class WaiterOrderItemSerializer(serializers.ModelSerializer):
         model = WaiterOrderItem
         fields = '__all__'
 
-class WaiterOrderSerializer(serializers.ModelSerializer):
-    order_items = WaiterOrderItemSerializer(many=True, read_only=True)
-    total_items = serializers.ReadOnlyField()
-    wait_time_minutes = serializers.ReadOnlyField()
-    table_number = serializers.CharField(source='table.table_number', read_only=True)
-    waiter_name = serializers.CharField(source='waiter.get_full_name', read_only=True)
-
-    class Meta:
-        model = WaiterOrder
-        fields = '__all__'
-
 class KitchenOrderSerializer(serializers.ModelSerializer):
     order_number = serializers.ReadOnlyField()
     total_items = serializers.ReadOnlyField()
     wait_time_minutes = serializers.ReadOnlyField()
     is_overdue = serializers.ReadOnlyField()
     urgency_level = serializers.ReadOnlyField()
+    order_items = serializers.SerializerMethodField()
 
     class Meta:
         model = KitchenOrder
         fields = '__all__'
 
+    def get_order_items(self, obj):
+        return WaiterOrderItemSerializer(obj.waiter_order.order_items.all(), many=True).data
+
 class MenuItemSerializer(serializers.ModelSerializer):
-    """Simplified MenuItem serializer for mobile ordering"""
     category_name = serializers.CharField(source='category.name_en', read_only=True)
 
     class Meta:
         model = MenuItem
         fields = ['id', 'name_en', 'name_hi', 'description_en', 'price', 'available', 'category_name', 'image']
-

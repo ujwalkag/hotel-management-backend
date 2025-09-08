@@ -1,16 +1,20 @@
-# apps/mobile_ordering/models.py
+# Create new Django app: apps/mobile_ordering/
+
+# apps/mobile_ordering/models.py - COMPLETE MOBILE ORDERING & KITCHEN DISPLAY SYSTEM
 """
-MOBILE ORDERING SYSTEM - Complete waiter mobile ordering & kitchen display
-COMPATIBLE: Works with existing MenuItem and CustomUser models
-NO CONFLICTS: Separate database tables from existing billing system
+COMPLETE MOBILE ORDERING SYSTEM
+- Waiter mobile interface for table ordering
+- Kitchen display with real-time status updates
+- Table management with occupancy tracking
+- Tables occupied until billed, then auto-available
 """
 
 from django.db import models
 from django.utils import timezone
 from django.db.models.signals import post_save, pre_delete
 from django.dispatch import receiver
-from apps.users.models import CustomUser  # Your existing user model
-from apps.menu.models import MenuItem  # Your existing menu model
+from apps.users.models import CustomUser
+from apps.menu.models import MenuItem
 from decimal import Decimal
 from datetime import datetime, timedelta
 import uuid
@@ -367,9 +371,6 @@ class WaiterOrder(models.Model):
             self.confirmed_at = timezone.now()
             self.save()
 
-            # Add to enhanced billing
-            self.add_to_billing()
-
             # Send to kitchen
             self.send_to_kitchen()
 
@@ -427,23 +428,6 @@ class WaiterOrder(models.Model):
             self.completed_at = timezone.now()
             self.save()
 
-    def add_to_billing(self):
-        """Add order to enhanced billing system"""
-        self.is_in_billing = True
-        self.save(update_fields=['is_in_billing'])
-
-    def cancel_order(self, reason=""):
-        """Cancel the order"""
-        if self.status not in ['served', 'completed']:
-            self.status = 'cancelled'
-            self.special_instructions += f" [CANCELLED: {reason}]"
-            self.save()
-
-            # Remove from kitchen if present
-            KitchenOrder.objects.filter(waiter_order=self).delete()
-            return True
-        return False
-
     @property
     def total_items(self):
         """Total number of items in the order"""
@@ -466,7 +450,7 @@ class WaiterOrder(models.Model):
         ordering = ['-created_at']
 
 class WaiterOrderItem(models.Model):
-    """Individual items in a waiter order - Uses existing MenuItem"""
+    """Individual items in a waiter order"""
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('preparing', 'Preparing'),
@@ -476,7 +460,7 @@ class WaiterOrderItem(models.Model):
     ]
 
     waiter_order = models.ForeignKey(WaiterOrder, on_delete=models.CASCADE, related_name='order_items')
-    menu_item = models.ForeignKey(MenuItem, on_delete=models.CASCADE)  # Uses existing MenuItem
+    menu_item = models.ForeignKey(MenuItem, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=8, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
@@ -507,31 +491,6 @@ class WaiterOrderItem(models.Model):
             customizations = ", ".join([f"{k}: {v}" for k, v in self.item_customizations.items()])
             name += f" ({customizations})"
         return name
-
-    def start_preparation(self, cook_name=""):
-        """Mark item as being prepared"""
-        if self.status == 'pending':
-            self.status = 'preparing'
-            self.prep_start_time = timezone.now()
-            self.assigned_cook = cook_name
-            self.save()
-
-    def mark_ready(self):
-        """Mark item as ready"""
-        if self.status == 'preparing':
-            self.status = 'ready'
-            self.prep_end_time = timezone.now()
-
-            if self.prep_start_time:
-                self.prep_time_minutes = int((self.prep_end_time - self.prep_start_time).total_seconds() / 60)
-
-            self.save()
-
-    def mark_served(self):
-        """Mark item as served"""
-        if self.status == 'ready':
-            self.status = 'served'
-            self.save()
 
     def __str__(self):
         return f"{self.menu_item.name_en} x {self.quantity} - {self.waiter_order.order_number}"

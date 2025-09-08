@@ -1,20 +1,20 @@
-# apps/staff/models.py - FIXED VERSION (NO CIRCULAR IMPORTS)
+# apps/staff/models.py - COMPLETE FRESH STAFF MANAGEMENT SYSTEM
 """
-STAFF MANAGEMENT SYSTEM - Complete HR & Payroll
-FIXED: Removed circular import from line 6
-COMPATIBLE: Works with existing CustomUser system
+COMPLETE STAFF MANAGEMENT SYSTEM - Two-Tier Architecture
+1. Access Control: Uses existing CustomUser roles
+2. HR Management: Complete employee lifecycle with payroll, attendance, advances
 """
 
 from django.db import models
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
-from apps.users.models import CustomUser  # Your existing user model - NO CIRCULAR IMPORT
+from apps.users.models import CustomUser
 from decimal import Decimal
 from datetime import datetime, date, timedelta
 import uuid
 
 class StaffDepartment(models.Model):
-    """Departments for organizing staff"""
+    """Departments for staff organization"""
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     head_of_department = models.CharField(max_length=100, blank=True)
@@ -35,7 +35,7 @@ class StaffDepartment(models.Model):
 class StaffEmployee(models.Model):
     """
     Complete HR Management System - Separate from User Access Control
-    This handles employee data, payroll, attendance etc.
+    This manages employee data, payroll, attendance etc.
     Links to CustomUser only if staff needs system access
     """
     EMPLOYMENT_STATUS_CHOICES = [

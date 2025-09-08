@@ -1,4 +1,3 @@
-# apps/mobile_ordering/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
@@ -13,6 +12,5 @@ router.register(r'kitchen-orders', KitchenOrderViewSet)
 router.register(r'menu-items', MenuItemViewSet)
 
 urlpatterns = [
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
 ]
-
