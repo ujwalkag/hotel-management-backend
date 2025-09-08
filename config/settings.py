@@ -51,7 +51,7 @@ INSTALLED_APPS = [
     'apps.notifications',
     'apps.tables',
     'apps.staff',
-    'apps.kitchen',
+    #'apps.kitchen',
 ]
 
 # Middleware
