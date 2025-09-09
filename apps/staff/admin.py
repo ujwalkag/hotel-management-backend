@@ -1,554 +1,325 @@
-# apps/tables/admin.py - COMPLETE WORKING VERSION
+# apps/staff/admin.py - COMPLETE AND CORRECT STAFF ADMIN
+
 from django.contrib import admin
 from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from .models import (
-    RestaurantTable, 
-    MobileOrder, 
-    MobileOrderItem, 
-    KitchenDisplayOrder, 
-    EnhancedBillingSession,
-    # Legacy models for backward compatibility
-    TableOrder,
-    OrderItem,
-    KitchenDisplayItem
+    StaffDepartment, 
+    StaffEmployee, 
+    StaffAttendance, 
+    StaffPayroll, 
+    StaffAdvancePayment
 )
 
-@admin.register(RestaurantTable)
-class RestaurantTableAdmin(admin.ModelAdmin):
+@admin.register(StaffDepartment)
+class StaffDepartmentAdmin(admin.ModelAdmin):
+    list_display = ['name', 'head_of_department', 'employee_count', 'budget_allocation', 'is_active', 'created_at']
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['name', 'head_of_department']
+    readonly_fields = ['created_at', 'updated_at']
+
+    fieldsets = (
+        ('Department Information', {
+            'fields': ('name', 'description', 'head_of_department')
+        }),
+        ('Budget & Status', {
+            'fields': ('budget_allocation', 'is_active')
+        }),
+        ('System Information', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+
+    def employee_count(self, obj):
+        count = obj.staffemployee_set.filter(is_active=True).count()
+        if count > 0:
+            url = reverse('admin:staff_staffemployee_changelist') + f'?department__id={obj.id}'
+            return format_html('<a href="{}">{} employees</a>', url, count)
+        return '0 employees'
+    employee_count.short_description = 'Active Employees'
+
+@admin.register(StaffEmployee)
+class StaffEmployeeAdmin(admin.ModelAdmin):
     list_display = [
-        'table_number', 
-        'table_name', 
-        'capacity', 
-        'table_type', 
-        'status_badge', 
-        'location', 
-        'current_session_display',
-        'active_orders_count',
-        'current_bill_total',
-        'is_active'
+        'employee_id', 'full_name', 'department', 'position', 
+        'employment_status', 'base_salary', 'hire_date', 'is_active'
     ]
-    list_filter = ['status', 'table_type', 'location', 'is_active']
-    search_fields = ['table_number', 'table_name', 'location']
+    list_filter = [
+        'employment_status', 'employment_type', 'department', 
+        'shift_type', 'is_active', 'hire_date'
+    ]
+    search_fields = ['employee_id', 'full_name', 'email', 'phone']
+    readonly_fields = ['employee_id', 'age', 'years_of_service', 'current_monthly_salary', 'created_at', 'updated_at']
+
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('employee_id', 'full_name', 'email', 'phone', 'date_of_birth')
+        }),
+        ('Address', {
+            'fields': ('address', 'city', 'state', 'pincode')
+        }),
+        ('Employment Details', {
+            'fields': (
+                'department', 'position', 'employment_status', 'employment_type', 
+                'shift_type', 'hire_date', 'probation_end_date', 'termination_date'
+            )
+        }),
+        ('Salary Information', {
+            'fields': (
+                'base_salary', 'hourly_rate', 'overtime_rate',
+                'night_shift_allowance', 'weekend_allowance'
+            )
+        }),
+        ('Monthly Allowances', {
+            'fields': ('house_rent_allowance', 'transport_allowance', 'medical_allowance')
+        }),
+        ('Bank Details', {
+            'fields': ('bank_name', 'account_number', 'ifsc_code'),
+            'classes': ('collapse',)
+        }),
+        ('System User Link', {
+            'fields': ('system_user',),
+            'description': 'Link to system user account if employee needs app access'
+        }),
+        ('Calculated Fields', {
+            'fields': ('age', 'years_of_service', 'current_monthly_salary'),
+            'classes': ('collapse',)
+        }),
+        ('System Information', {
+            'fields': ('is_active', 'created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly_fields = list(self.readonly_fields)
+        if obj:  # editing an existing object
+            readonly_fields.append('employee_id')
+        return readonly_fields
+
+    def save_model(self, request, obj, form, change):
+        if not change:  # creating new object
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
+@admin.register(StaffAttendance)
+class StaffAttendanceAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee', 'date', 'status', 'check_in_time', 'check_out_time', 
+        'total_hours', 'is_approved'
+    ]
+    list_filter = [
+        'status', 'date', 'is_approved', 'is_night_shift', 
+        'is_weekend', 'is_holiday', 'employee__department'
+    ]
+    search_fields = ['employee__full_name', 'employee__employee_id']
     readonly_fields = [
-        'current_session_id', 
-        'session_start_time', 
-        'estimated_end_time',
-        'last_occupied_at', 
-        'last_available_at', 
-        'qr_code_data',
-        'created_at', 
-        'updated_at'
+        'total_hours', 'regular_hours', 'overtime_hours', 'break_hours',
+        'session_duration_minutes', 'created_at', 'modified_at'
+    ]
+    date_hierarchy = 'date'
+
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('employee', 'date', 'status')
+        }),
+        ('Time Tracking', {
+            'fields': (
+                'check_in_time', 'check_out_time', 
+                'break_start_time', 'break_end_time'
+            )
+        }),
+        ('Location Information', {
+            'fields': ('check_in_location', 'check_out_location', 'ip_address'),
+            'classes': ('collapse',)
+        }),
+        ('Shift Information', {
+            'fields': ('is_night_shift', 'is_weekend', 'is_holiday')
+        }),
+        ('Calculated Hours (Auto-calculated)', {
+            'fields': ('total_hours', 'regular_hours', 'overtime_hours', 'break_hours'),
+            'classes': ('collapse',)
+        }),
+        ('Approval', {
+            'fields': ('is_approved', 'approved_by', 'approval_date')
+        }),
+        ('Additional Information', {
+            'fields': ('notes', 'device_info'),
+            'classes': ('collapse',)
+        })
+    )
+
+    actions = ['approve_attendance', 'calculate_hours_bulk']
+
+    def approve_attendance(self, request, queryset):
+        updated = queryset.update(is_approved=True, approved_by=request.user)
+        self.message_user(request, f'{updated} attendance records approved.')
+    approve_attendance.short_description = 'Approve selected attendance records'
+
+    def calculate_hours_bulk(self, request, queryset):
+        count = 0
+        for attendance in queryset:
+            attendance.calculate_hours()
+            count += 1
+        self.message_user(request, f'Calculated hours for {count} attendance records.')
+    calculate_hours_bulk.short_description = 'Calculate hours for selected records'
+
+    def session_duration_minutes(self, obj):
+        return f"{obj.session_duration_minutes} minutes" if obj.session_duration_minutes else "—"
+    session_duration_minutes.short_description = 'Session Duration'
+
+@admin.register(StaffPayroll)
+class StaffPayrollAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee', 'month_year', 'status', 'regular_hours_worked',
+        'overtime_hours_worked', 'gross_pay', 'net_pay', 'payment_date'
+    ]
+    list_filter = [
+        'status', 'month', 'year', 'employee__department'
+    ]
+    search_fields = ['employee__full_name', 'employee__employee_id']
+    readonly_fields = [
+        'regular_hours_worked', 'overtime_hours_worked', 'night_shift_hours',
+        'weekend_hours', 'holiday_hours', 'base_pay', 'overtime_pay',
+        'night_shift_pay', 'weekend_pay', 'holiday_pay', 'advance_deduction',
+        'gross_pay', 'total_deductions', 'net_pay', 'created_at', 'updated_at'
     ]
 
     fieldsets = (
         ('Basic Information', {
-            'fields': ('table_number', 'table_name', 'capacity', 'table_type', 'location')
+            'fields': ('employee', 'month', 'year', 'pay_period_start', 'pay_period_end')
         }),
-        ('Status & Availability', {
-            'fields': ('status', 'is_active', 'mobile_order_enabled')
-        }),
-        ('Current Session', {
-            'fields': ('current_session_id', 'session_start_time', 'estimated_end_time'),
+        ('Hours Worked (Auto-calculated)', {
+            'fields': (
+                'regular_hours_worked', 'overtime_hours_worked', 
+                'night_shift_hours', 'weekend_hours', 'holiday_hours'
+            ),
             'classes': ('collapse',)
         }),
-        ('Analytics', {
-            'fields': ('average_dining_duration', 'last_occupied_at', 'last_available_at'),
+        ('Earnings (Auto-calculated)', {
+            'fields': (
+                'base_pay', 'overtime_pay', 'night_shift_pay', 
+                'weekend_pay', 'holiday_pay'
+            ),
             'classes': ('collapse',)
         }),
-        ('System', {
-            'fields': ('qr_code_data', 'created_at', 'updated_at'),
+        ('Allowances', {
+            'fields': ('hra', 'transport_allowance', 'medical_allowance', 'performance_bonus')
+        }),
+        ('Deductions (Auto-calculated)', {
+            'fields': (
+                'advance_deduction', 'loan_deduction', 'provident_fund', 
+                'professional_tax', 'income_tax', 'other_deductions'
+            ),
             'classes': ('collapse',)
-        })
-    )
-
-    def status_badge(self, obj):
-        colors = {
-            'available': 'green',
-            'occupied': 'orange',
-            'reserved': 'blue',
-            'cleaning': 'gray',
-            'maintenance': 'red',
-            'billing': 'purple'
-        }
-        color = colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = 'Status'
-
-    def current_session_display(self, obj):
-        if obj.current_session_id:
-            return format_html(
-                '<strong>{}</strong><br/><small>Started: {}</small>',
-                obj.current_session_id,
-                obj.session_start_time.strftime('%H:%M') if obj.session_start_time else 'N/A'
+        }),
+        ('Totals (Auto-calculated)', {
+            'fields': ('gross_pay', 'total_deductions', 'net_pay')
+        }),
+        ('Status & Processing', {
+            'fields': (
+                'status', 'calculated_by', 'calculation_date',
+                'approved_by', 'approval_date'
             )
-        return 'No active session'
-    current_session_display.short_description = 'Current Session'
-
-    actions = ['make_available', 'mark_for_cleaning', 'start_maintenance']
-
-    def make_available(self, request, queryset):
-        count = queryset.update(status='available')
-        self.message_user(request, f'{count} tables marked as available.')
-    make_available.short_description = 'Mark selected tables as available'
-
-    def mark_for_cleaning(self, request, queryset):
-        count = queryset.update(status='cleaning')
-        self.message_user(request, f'{count} tables marked for cleaning.')
-    mark_for_cleaning.short_description = 'Mark selected tables for cleaning'
-
-    def start_maintenance(self, request, queryset):
-        count = queryset.update(status='maintenance')
-        self.message_user(request, f'{count} tables marked for maintenance.')
-    start_maintenance.short_description = 'Mark selected tables for maintenance'
-
-@admin.register(MobileOrder)
-class MobileOrderAdmin(admin.ModelAdmin):
-    list_display = [
-        'order_number',
-        'table_link',
-        'waiter_link',
-        'customer_name',
-        'customer_count',
-        'status_badge',
-        'priority_badge',
-        'total_amount',
-        'created_at',
-        'is_in_enhanced_billing'
-    ]
-    list_filter = [
-        'status', 
-        'priority', 
-        'is_takeaway', 
-        'is_in_enhanced_billing',
-        'created_at',
-        'table__table_type'
-    ]
-    search_fields = [
-        'order_number', 
-        'customer_name', 
-        'customer_phone', 
-        'table__table_number',
-        'waiter__email'
-    ]
-    readonly_fields = [
-        'order_number',
-        'total_amount',
-        'created_at',
-        'confirmed_at',
-        'kitchen_start_time',
-        'ready_time',
-        'served_time',
-        'completed_at',
-        'billed_at',
-        'actual_preparation_time'
-    ]
-
-    fieldsets = (
-        ('Order Information', {
-            'fields': ('order_number', 'table', 'session_id', 'waiter')
-        }),
-        ('Customer Details', {
-            'fields': ('customer_name', 'customer_phone', 'customer_count')
-        }),
-        ('Order Management', {
-            'fields': ('status', 'priority', 'special_instructions', 'is_takeaway')
-        }),
-        ('Kitchen Integration', {
-            'fields': ('kitchen_notes', 'estimated_preparation_time', 'actual_preparation_time'),
-            'classes': ('collapse',)
-        }),
-        ('Billing', {
-            'fields': ('total_amount', 'discount_percentage', 'discount_amount', 'is_in_enhanced_billing', 'can_be_billed'),
-            'classes': ('collapse',)
-        }),
-        ('Timestamps', {
-            'fields': ('created_at', 'confirmed_at', 'kitchen_start_time', 'ready_time', 'served_time', 'completed_at', 'billed_at'),
-            'classes': ('collapse',)
-        })
-    )
-
-    def table_link(self, obj):
-        url = reverse('admin:tables_restauranttable_change', args=[obj.table.pk])
-        return format_html('<a href="{}">{}</a>', url, obj.table.table_number)
-    table_link.short_description = 'Table'
-
-    def waiter_link(self, obj):
-        if obj.waiter:
-            url = reverse('admin:users_customuser_change', args=[obj.waiter.pk])
-            return format_html('<a href="{}">{}</a>', url, obj.waiter.email)
-        return 'No waiter assigned'
-    waiter_link.short_description = 'Waiter'
-
-    def status_badge(self, obj):
-        colors = {
-            'draft': 'gray',
-            'pending': 'orange',
-            'confirmed': 'blue',
-            'in_progress': 'purple',
-            'ready': 'green',
-            'served': 'teal',
-            'completed': 'darkgreen',
-            'billed': 'black',
-            'cancelled': 'red'
-        }
-        color = colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = 'Status'
-
-    def priority_badge(self, obj):
-        colors = {
-            'low': 'gray',
-            'normal': 'blue',
-            'high': 'orange',
-            'urgent': 'red'
-        }
-        color = colors.get(obj.priority, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_priority_display()
-        )
-    priority_badge.short_description = 'Priority'
-
-    actions = ['confirm_orders', 'mark_as_ready', 'mark_as_served']
-
-    def confirm_orders(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.confirm_order():
-                count += 1
-        self.message_user(request, f'{count} orders confirmed and sent to kitchen.')
-    confirm_orders.short_description = 'Confirm selected orders'
-
-    def mark_as_ready(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.status == 'in_progress':
-                order.mark_ready()
-                count += 1
-        self.message_user(request, f'{count} orders marked as ready.')
-    mark_as_ready.short_description = 'Mark selected orders as ready'
-
-    def mark_as_served(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.status == 'ready':
-                order.mark_served()
-                count += 1
-        self.message_user(request, f'{count} orders marked as served.')
-    mark_as_served.short_description = 'Mark selected orders as served'
-
-class MobileOrderItemInline(admin.TabularInline):
-    model = MobileOrderItem
-    extra = 0
-    readonly_fields = ['total_price', 'order_time', 'preparation_started', 'ready_time', 'served_time']
-    fields = [
-        'menu_item', 
-        'quantity', 
-        'unit_price', 
-        'total_price', 
-        'status', 
-        'special_instructions',
-        'assigned_to_cook'
-    ]
-
-# Add inline to MobileOrder admin
-MobileOrderAdmin.inlines = [MobileOrderItemInline]
-
-@admin.register(MobileOrderItem)
-class MobileOrderItemAdmin(admin.ModelAdmin):
-    list_display = [
-        'display_name',
-        'mobile_order_link',
-        'quantity',
-        'unit_price',
-        'total_price',
-        'status_badge',
-        'assigned_to_cook'
-    ]
-    list_filter = ['status', 'menu_item__category', 'order_time']
-    search_fields = [
-        'mobile_order__order_number',
-        'menu_item__name_en',
-        'special_instructions',
-        'assigned_to_cook'
-    ]
-    readonly_fields = ['total_price', 'order_time', 'preparation_started', 'ready_time', 'served_time']
-
-    def mobile_order_link(self, obj):
-        url = reverse('admin:tables_mobileorder_change', args=[obj.mobile_order.pk])
-        return format_html('<a href="{}">{}</a>', url, obj.mobile_order.order_number)
-    mobile_order_link.short_description = 'Order'
-
-    def status_badge(self, obj):
-        colors = {
-            'pending': 'orange',
-            'preparing': 'blue',
-            'ready': 'green',
-            'served': 'darkgreen',
-            'cancelled': 'red'
-        }
-        color = colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = 'Status'
-
-@admin.register(KitchenDisplayOrder)
-class KitchenDisplayOrderAdmin(admin.ModelAdmin):
-    list_display = [
-        'order_number',
-        'table_number',
-        'customer_count',
-        'status_badge',
-        'priority_badge',
-        'assigned_cook',
-        'wait_time_display',
-        'is_overdue',
-        'received_at'
-    ]
-    list_filter = ['status', 'priority', 'assigned_cook', 'received_at']
-    search_fields = [
-        'mobile_order__order_number',
-        'mobile_order__table__table_number',
-        'assigned_cook',
-        'kitchen_notes'
-    ]
-    readonly_fields = [
-        'mobile_order',
-        'received_at',
-        'preparation_started',
-        'ready_at',
-        'completed_at',
-        'wait_time_minutes',
-        'is_overdue'
-    ]
-
-    def wait_time_display(self, obj):
-        minutes = obj.wait_time_minutes
-        if obj.is_overdue:
-            return format_html('<span style="color: red; font-weight: bold;">{} min (OVERDUE)</span>', minutes)
-        return f'{minutes} min'
-    wait_time_display.short_description = 'Wait Time'
-
-    def status_badge(self, obj):
-        colors = {
-            'pending': 'red',
-            'preparing': 'orange',
-            'ready': 'green',
-            'completed': 'gray'
-        }
-        color = colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = 'Status'
-
-    def priority_badge(self, obj):
-        colors = {
-            'low': 'gray',
-            'normal': 'blue',
-            'high': 'orange',
-            'urgent': 'red'
-        }
-        color = colors.get(obj.priority, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_priority_display()
-        )
-    priority_badge.short_description = 'Priority'
-
-    actions = ['start_preparation', 'mark_ready', 'mark_completed']
-
-    def start_preparation(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.status == 'pending':
-                order.start_preparation()
-                count += 1
-        self.message_user(request, f'{count} orders started preparation.')
-    start_preparation.short_description = 'Start preparation for selected orders'
-
-    def mark_ready(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.status == 'preparing':
-                order.mark_ready()
-                count += 1
-        self.message_user(request, f'{count} orders marked as ready.')
-    mark_ready.short_description = 'Mark selected orders as ready'
-
-    def mark_completed(self, request, queryset):
-        count = 0
-        for order in queryset:
-            if order.status == 'ready':
-                order.mark_completed()
-                count += 1
-        self.message_user(request, f'{count} orders marked as completed.')
-    mark_completed.short_description = 'Mark selected orders as completed'
-
-@admin.register(EnhancedBillingSession)
-class EnhancedBillingSessionAdmin(admin.ModelAdmin):
-    list_display = [
-        'session_id',
-        'table_link',
-        'customer_name',
-        'customer_count',
-        'status_badge',
-        'subtotal',
-        'total_amount',
-        'payment_method',
-        'duration_minutes',
-        'order_count',
-        'created_at'
-    ]
-    list_filter = ['status', 'payment_method', 'payment_status', 'created_at']
-    search_fields = [
-        'session_id',
-        'customer_name',
-        'customer_phone',
-        'table__table_number'
-    ]
-    readonly_fields = [
-        'session_id',
-        'session_start',
-        'actual_end_time',
-        'duration_minutes',
-        'order_count',
-        'created_at',
-        'updated_at'
-    ]
-
-    fieldsets = (
-        ('Session Information', {
-            'fields': ('session_id', 'table', 'status')
-        }),
-        ('Customer Information', {
-            'fields': ('customer_name', 'customer_phone', 'customer_count')
-        }),
-        ('Timing', {
-            'fields': ('session_start', 'estimated_end_time', 'actual_end_time', 'duration_minutes'),
-            'classes': ('collapse',)
-        }),
-        ('Billing Details', {
-            'fields': ('subtotal', 'discount_amount', 'tax_amount', 'service_charge', 'total_amount')
         }),
         ('Payment Information', {
-            'fields': ('payment_method', 'payment_status', 'cash_amount', 'card_amount', 'upi_amount'),
-            'classes': ('collapse',)
+            'fields': ('payment_date', 'payment_method', 'payment_reference')
         }),
-        ('System', {
-            'fields': ('billed_by', 'order_count', 'created_at', 'updated_at'),
+        ('Notes', {
+            'fields': ('notes',),
             'classes': ('collapse',)
         })
     )
 
-    def table_link(self, obj):
-        url = reverse('admin:tables_restauranttable_change', args=[obj.table.pk])
-        return format_html('<a href="{}">{}</a>', url, obj.table.table_number)
-    table_link.short_description = 'Table'
+    actions = ['calculate_payroll_bulk', 'approve_payroll_bulk']
 
-    def status_badge(self, obj):
-        colors = {
-            'active': 'blue',
-            'ready_to_bill': 'orange',
-            'billing_in_progress': 'purple',
-            'billed': 'green',
-            'completed': 'darkgreen',
-            'cancelled': 'red'
-        }
-        color = colors.get(obj.status, 'gray')
-        return format_html(
-            '<span style="color: {}; font-weight: bold;">{}</span>',
-            color,
-            obj.get_status_display()
-        )
-    status_badge.short_description = 'Status'
-
-    actions = ['prepare_for_billing', 'calculate_totals']
-
-    def prepare_for_billing(self, request, queryset):
+    def calculate_payroll_bulk(self, request, queryset):
         count = 0
-        for session in queryset:
-            if session.status == 'active':
-                session.prepare_for_billing()
-                count += 1
-        self.message_user(request, f'{count} sessions prepared for billing.')
-    prepare_for_billing.short_description = 'Prepare selected sessions for billing'
-
-    def calculate_totals(self, request, queryset):
-        count = 0
-        for session in queryset:
-            session.calculate_totals()
+        for payroll in queryset.filter(status='draft'):
+            payroll.calculated_by = request.user
+            payroll.calculate_payroll()
             count += 1
-        self.message_user(request, f'{count} session totals recalculated.')
-    calculate_totals.short_description = 'Recalculate totals for selected sessions'
+        self.message_user(request, f'Calculated {count} payroll records.')
+    calculate_payroll_bulk.short_description = 'Calculate selected payroll records'
 
-# Legacy model admin - for backward compatibility and data migration
-@admin.register(TableOrder)
-class TableOrderAdmin(admin.ModelAdmin):
-    list_display = ['order_number', 'table', 'customer_name', 'waiter', 'status', 'total_amount', 'created_at']
-    list_filter = ['status', 'created_at']
-    search_fields = ['order_number', 'customer_name']
-    readonly_fields = ['created_at']
+    def approve_payroll_bulk(self, request, queryset):
+        updated = queryset.filter(status='calculated').update(
+            status='approved', 
+            approved_by=request.user
+        )
+        self.message_user(request, f'Approved {updated} payroll records.')
+    approve_payroll_bulk.short_description = 'Approve selected payroll records'
 
-    def has_add_permission(self, request):
-        return False  # Prevent adding new legacy orders
+    def month_year(self, obj):
+        months = [
+            'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+            'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+        ]
+        return f"{months[obj.month-1]} {obj.year}"
+    month_year.short_description = 'Pay Period'
 
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if not request.user.is_superuser:
-            return qs.none()  # Hide from non-superusers
-        return qs
+@admin.register(StaffAdvancePayment)
+class StaffAdvancePaymentAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee', 'amount', 'status', 'urgency_level', 
+        'remaining_balance', 'monthly_deduction_amount', 'created_at'
+    ]
+    list_filter = [
+        'status', 'urgency_level', 'created_at', 'employee__department'
+    ]
+    search_fields = ['employee__full_name', 'employee__employee_id', 'reason']
+    readonly_fields = [
+        'monthly_deduction_amount', 'remaining_balance', 
+        'created_at', 'updated_at'
+    ]
 
-@admin.register(OrderItem)
-class OrderItemAdmin(admin.ModelAdmin):
-    list_display = ['order', 'menu_item', 'quantity', 'unit_price']
-    list_filter = ['order__created_at']
-    search_fields = ['order__order_number', 'menu_item__name_en']
+    fieldsets = (
+        ('Employee & Request', {
+            'fields': ('employee', 'amount', 'reason', 'urgency_level', 'required_by_date')
+        }),
+        ('Repayment Plan', {
+            'fields': ('deduction_months', 'monthly_deduction_amount', 'remaining_balance')
+        }),
+        ('Status & Approval', {
+            'fields': ('status', 'approved_by', 'approval_date', 'approval_notes')
+        }),
+        ('Disbursement', {
+            'fields': ('disbursed_by', 'disbursement_date', 'disbursement_method')
+        }),
+        ('System Information', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
 
-    def has_add_permission(self, request):
-        return False  # Prevent adding new legacy items
+    actions = ['approve_advances', 'disburse_advances']
 
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if not request.user.is_superuser:
-            return qs.none()  # Hide from non-superusers
-        return qs
+    def approve_advances(self, request, queryset):
+        updated = 0
+        for advance in queryset.filter(status='pending'):
+            if advance.approve_advance(request.user):
+                updated += 1
+        self.message_user(request, f'Approved {updated} advance payment requests.')
+    approve_advances.short_description = 'Approve selected advance payments'
 
-@admin.register(KitchenDisplayItem)
-class KitchenDisplayItemAdmin(admin.ModelAdmin):
-    list_display = ['order', 'status', 'created_at']
-    list_filter = ['status', 'created_at']
-    search_fields = ['order__order_number']
-    readonly_fields = ['created_at']
+    def disburse_advances(self, request, queryset):
+        updated = 0
+        for advance in queryset.filter(status='approved'):
+            if advance.disburse_advance(request.user):
+                updated += 1
+        self.message_user(request, f'Disbursed {updated} advance payments.')
+    disburse_advances.short_description = 'Disburse selected advance payments'
 
-    def has_add_permission(self, request):
-        return False  # Prevent adding new legacy items
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if not request.user.is_superuser:
-            return qs.none()  # Hide from non-superusers
-        return qs
+    def get_readonly_fields(self, request, obj=None):
+        readonly_fields = list(self.readonly_fields)
+        if obj and obj.status in ['approved', 'disbursed', 'completed']:
+            # Make most fields readonly for processed advances
+            readonly_fields.extend(['employee', 'amount', 'reason', 'deduction_months'])
+        return readonly_fields
 
 # Custom admin site configuration
-admin.site.site_header = 'Hotel Management System'
-admin.site.site_title = 'Hotel Admin'
-admin.site.index_title = 'Hotel Management Administration'
-
+admin.site.site_header = "Hotel Management - Staff Administration"
+admin.site.site_title = "Staff Management"
+admin.site.index_title = "Staff Management Administration"
