@@ -49,11 +49,7 @@ INSTALLED_APPS = [
     'apps.rooms',
     'apps.bills',
     'apps.notifications',
-    'apps.mobile_ordering',     # NEW: Mobile ordering & kitchen display
-    'apps.enhanced_billing',    # NEW: Enhanced billing with GST
-    #'apps.tables',
     'apps.staff',
-    #'apps.kitchen',
 ]
 
 # Middleware

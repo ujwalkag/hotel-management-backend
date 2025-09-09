@@ -15,11 +15,8 @@ urlpatterns = [
     path('api/bills/', include('apps.bills.urls')),
     path('api/inventory/', include('apps.inventory.urls')),
     path('api/notifications/', include('apps.notifications.urls')),
-    path('api/staff/', include('apps.staff.urls')),
-    # NEW API ENDPOINTS
-    path('api/mobile-orders/', include('apps.mobile_ordering.urls')),
-    path('api/enhanced-billing/', include('apps.enhanced_billing.urls')),
-    #path('api/tables/', include('apps.tables.urls')),
-    
+    path('api/staff/', include('apps.staff.urls')), 
 ]
-
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
