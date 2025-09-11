@@ -49,7 +49,7 @@ INSTALLED_APPS = [
     'apps.rooms',
     'apps.bills',
     'apps.notifications',
-    'apps.staff',
+    #'apps.staff',
 ]
 
 # Middleware
