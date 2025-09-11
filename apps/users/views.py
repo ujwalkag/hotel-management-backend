@@ -9,10 +9,57 @@ from django.db import transaction
 from .models import CustomUser
 from .serializers import CustomTokenObtainPairSerializer, UserSerializer
 
-class CustomTokenObtainPairView(TokenObtainPairView):
-    """Custom token obtain pair view for JWT authentication"""
-    serializer_class = CustomTokenObtainPairSerializer
+from rest_framework.decorators import api_view, permission_classes
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+import logging
 
+logger = logging.getLogger(__name__)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+    permission_classes = [AllowAny]
+
+    def options(self, request, *args, **kwargs):
+        """Handle preflight OPTIONS request"""
+        response = Response()
+        response["Access-Control-Allow-Origin"] = request.META.get('HTTP_ORIGIN', '*')
+        response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+    def post(self, request, *args, **kwargs):
+        """Enhanced POST with proper CORS headers"""
+        logger.info(f"Authentication request from: {request.META.get('HTTP_ORIGIN', 'Unknown')}")
+
+        try:
+            response = super().post(request, *args, **kwargs)
+
+            # Add CORS headers to response
+            origin = request.META.get('HTTP_ORIGIN')
+            if origin in ['https://hotelrshammad.co.in', 'https://www.hotelrshammad.co.in']:
+                response["Access-Control-Allow-Origin"] = origin
+                response["Access-Control-Allow-Credentials"] = "true"
+
+            logger.info("Authentication successful")
+            return response
+
+        except Exception as e:
+            logger.error(f"Authentication failed: {str(e)}")
+            response = Response(
+                {'error': 'Authentication failed', 'detail': str(e)}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+            # Add CORS headers even to error responses
+            origin = request.META.get('HTTP_ORIGIN')
+            if origin in ['https://hotelrshammad.co.in', 'https://www.hotelrshammad.co.in']:
+                response["Access-Control-Allow-Origin"] = origin
+                response["Access-Control-Allow-Credentials"] = "true"
+
+            return response
 class IsAdminRole(BasePermission):
     """Permission class to check if user has admin role"""
     def has_permission(self, request, view):

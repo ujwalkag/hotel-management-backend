@@ -49,7 +49,7 @@ INSTALLED_APPS = [
     'apps.rooms',
     'apps.bills',
     'apps.notifications',
-    #'apps.staff',
+    'apps.inventory',
 ]
 
 # Middleware
@@ -131,16 +131,28 @@ for app in os.listdir(os.path.join(BASE_DIR, "apps")):
 # Default Auto Field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS Settings
 CORS_ALLOWED_ORIGINS = [
     "https://hotelrshammad.co.in",
     "https://www.hotelrshammad.co.in",
-    "http://127.0.0.1:3000",  # local frontend dev if needed
+    "http://127.0.0.1:3000",
     "http://localhost:3000",
+]
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'cache-control',
 ]
 
 CORS_ALLOW_CREDENTIALS = True
-
+CORS_PREFLIGHT_MAX_AGE = 86400
+APPEND_SLASH = False
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
@@ -173,6 +185,22 @@ ORACLE_ACCESS_KEY = os.getenv('ORACLE_ACCESS_KEY')
 ORACLE_SECRET_KEY = os.getenv('ORACLE_SECRET_KEY')
 
 AUTH_USER_MODEL = 'users.CustomUser'
-# Add inventory app
-INSTALLED_APPS.append('apps.inventory')
 
+
+# Logging configuration for debugging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'apps.users.authentication': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
