@@ -1,5 +1,6 @@
-from django.urls import path
+from django.urls import path , include
 from .views import LogoutView
+from rest_framework.routers import DefaultRouter
 #from .views import CustomTokenObtainPairView, StaffUserViewSet
 from .views import (
     LogoutView,
@@ -16,13 +17,14 @@ staff_view = StaffUserViewSet.as_view({
 staff_detail = StaffUserViewSet.as_view({
     'delete': 'destroy',
 })
-
+router = DefaultRouter()
+router.register('staff', StaffUserViewSet, basename='staff')
 urlpatterns = [
     path('token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('staff/', staff_view, name='staff-list-create'),
     path('auth/verify/', verify_token, name='verify-token'),
     path('profile/', user_profile, name='user-profile'),
-    path('staff/<int:pk>/', staff_detail, name='staff-delete'),
-    path("logout/", LogoutView.as_view(), name="logout"),
+    path('logout/', LogoutView.as_view(), name='logout'),
+    path('', include(router.urls)),
+
 ]
 

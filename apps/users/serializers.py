@@ -7,17 +7,16 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         try:
             data = super().validate(attrs)
-            # Add ONLY existing fields from CustomUser model
             data['email'] = self.user.email
             data['role'] = self.user.role
             data['can_create_orders'] = self.user.can_create_orders
-            data['can_generate_bills'] = self.user.can_generate_bills  
+            data['can_generate_bills'] = self.user.can_generate_bills
             data['can_access_kitchen'] = self.user.can_access_kitchen
             data['is_active'] = self.user.is_active
             return data
         except AuthenticationFailed:
             raise AuthenticationFailed(detail="Invalid email or password.")
-    
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -29,11 +28,39 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
 class UserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=True)
+
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'role', 'can_create_orders', 'can_generate_bills', 'can_access_kitchen', 'is_active']
+        fields = [
+            'id',
+            'email',
+            'password',
+            'role',
+            'can_create_orders',
+            'can_generate_bills',
+            'can_access_kitchen',
+            'is_active',
+        ]
+
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        user = CustomUser(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 class UserRoleUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ['role', 'can_create_orders', 'can_generate_bills', 'can_access_kitchen']
+
