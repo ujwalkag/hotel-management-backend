@@ -167,91 +167,104 @@ class CreateRestaurantBillView(APIView):
 
 
 class CreateRoomBillView(APIView):
-    permission_classes = [IsAdminOrStaff]
+    permission_classes = [IsAuthenticated, IsAdminOrStaff]
 
     def post(self, request):
         user = request.user
-        customer_name = request.data.get("customer_name", "").strip()
-        customer_phone = request.data.get("customer_phone", "").strip()
-        room_id = request.data.get("room")
-        days = int(request.data.get("days", 1))
-        notify_customer_flag = request.data.get("notify_customer", False)
-        payment_method = request.data.get("payment_method", "cash")
-        apply_gst = request.data.get("apply_gst", False)
+        data = request.data
 
-        if isinstance(apply_gst, str):
-            apply_gst = apply_gst.lower() == "true"
+        # Required fields
+        customer_name = data.get("customer_name", "").strip()
+        customer_phone = data.get("customer_phone", "").strip()
+        items = data.get("items", [])  # Expecting list of {room, quantity}
+        payment_method = data.get("payment_method", "cash")
+        apply_gst = data.get("apply_gst", False)
+        notify_flag = data.get("notify_customer", False)
 
-        if not customer_name or not customer_phone or not room_id:
-            return Response({"error": "Customer name, phone and room required"}, status=400)
+        # Validate
+        if not customer_name or not customer_phone or not items or not isinstance(items, list):
+            return Response(
+                {"error": "Customer name, phone and items required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        try:
-            room = Room.objects.get(id=room_id)
-        except Room.DoesNotExist:
-            return Response({"error": "Room not found"}, status=404)
+        # Calculate base total
+        base_total = Decimal(0)
+        for it in items:
+            try:
+                room = Room.objects.get(id=it.get("room"))
+                qty = int(it.get("quantity", 1))
+                base_total += room.price_per_day * qty
+            except (Room.DoesNotExist, ValueError, TypeError):
+                return Response({"error": "Invalid room or quantity"}, status=400)
 
-        base_total = Decimal(room.price_per_day) * days
-        gst_amount = Decimal(0)
+        # GST calculation
         gst_rate = Decimal(0)
-
         if apply_gst:
             if base_total < 1000:
                 gst_rate = Decimal("0.00")
-            elif 1000 <= base_total < 7500:
+            elif base_total < 7500:
                 gst_rate = Decimal("0.05")
             else:
                 gst_rate = Decimal("0.12")
-            gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
+        gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
+        total_amount = base_total + gst_amount
 
-        total = base_total + gst_amount
-
+        # Create bill
         bill = Bill.objects.create(
             user=user,
-            bill_type='room',
+            bill_type="room",
             customer_name=customer_name,
             customer_phone=customer_phone,
-            room=room,
-            total_amount=total,
+            total_amount=total_amount,
             payment_method=payment_method
         )
 
-        BillItem.objects.create(
-            bill=bill,
-            item_name=f"{room.type_en} / {room.type_hi}",
-            quantity=days,
-            price=room.price_per_day
-        )
+        # Create BillItems
+        for it in items:
+            room = Room.objects.get(id=it.get("room"))
+            qty = int(it.get("quantity", 1))
+            BillItem.objects.create(
+                bill=bill,
+                item_name=f"{room.type_en} / {room.type_hi}",
+                quantity=qty,
+                price=room.price_per_day
+            )
 
+        # Render PDF
         folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
         os.makedirs(folder, exist_ok=True)
         filename = f"{bill.receipt_number}.pdf"
         pdf_path = os.path.join(folder, filename)
-        render_to_pdf("bills/bill_pdf.html", {"bill": bill, "items": bill.items.all(), "gst": gst_amount}, pdf_path)
+        render_to_pdf("bills/bill_pdf.html", {
+            "bill": bill,
+            "items": bill.items.all(),
+            "gst": gst_amount,
+            "gst_rate_percent": float(gst_rate * 100),
+        }, pdf_path)
 
+        # Notify admin
         notify_admin_via_whatsapp(
-            f"🛏️ New Room Bill\nCustomer: {customer_name}\nPhone: {customer_phone}\nRoom: {room.type_en} / {room.type_hi}\nDays: {days}\nTotal: ₹{total}\nReceipt: {bill.receipt_number}"
+            f"🛏️ New Room Bill\nCustomer: {customer_name}\nPhone: {customer_phone}\nTotal: ₹{total_amount}\nReceipt: {bill.receipt_number}"
         )
 
-        if notify_customer_flag:
-            notify_customer(
-                customer_name=customer_name,
-                customer_phone=customer_phone,
-                total=total,
-                receipt_number=bill.receipt_number,
-                bill_type="room",
-                pdf_path=pdf_path,
-                days=days
+        # Notify customer if requested
+        if notify_flag:
+            notify_customer_via_sms(
+                customer_phone,
+                f"Hi {customer_name}, your room bill is ₹{total_amount}. Receipt: {bill.receipt_number}"
             )
 
+        # Response
         return Response({
             "message": "Room bill created",
             "bill_id": bill.id,
             "receipt_number": bill.receipt_number,
-            "payment_method": bill.payment_method,
-            "gst_applied": apply_gst,
+            "gst_applied": bool(apply_gst),
+            "gst_rate": float(gst_rate * 100),
             "gst_amount": float(gst_amount),
-            "gst_rate": float(gst_rate)
-        }, status=201)
+            "total_amount": float(total_amount),
+        }, status=status.HTTP_201_CREATED)
 
 
 class BillPDFView(APIView):

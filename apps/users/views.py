@@ -307,3 +307,43 @@ class LogoutView(APIView):
                 {"error": "Invalid token or already logged out"}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_token(request):
+    """Verify if the current token is valid"""
+    try:
+        user = request.user
+        return Response({
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'role': user.role,
+                'can_create_orders': user.can_create_orders,
+                'can_generate_bills': user.can_generate_bills,
+                'can_access_kitchen': user.can_access_kitchen,
+                'is_active': user.is_active,
+            },
+            'valid': True
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'valid': False, 'error': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_profile(request):
+    """Get current user profile"""
+    try:
+        user = request.user
+        return Response({
+            'id': user.id,
+            'email': user.email,
+            'role': user.role,
+            'can_create_orders': user.can_create_orders,
+            'can_generate_bills': user.can_generate_bills,
+            'can_access_kitchen': user.can_access_kitchen,
+            'is_active': user.is_active,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            

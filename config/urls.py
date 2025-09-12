@@ -3,7 +3,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include
-from apps.users.views import CustomTokenObtainPairView
+from apps.users.views import CustomTokenObtainPairView ,  verify_token
 from rest_framework_simplejwt.views import TokenRefreshView
 
 urlpatterns = [
@@ -17,6 +17,9 @@ urlpatterns = [
     path('api/bills/', include('apps.bills.urls')),
     path('api/inventory/', include('apps.inventory.urls')),
     path('api/notifications/', include('apps.notifications.urls')),
+    path('api/rooms/bookings/', include('apps.rooms.urls')),
+    path('api/auth/verify/', verify_token, name='token_verify'),
+
     #path('api/staff/', include('apps.staff.urls')), 
 ]
 if settings.DEBUG:
