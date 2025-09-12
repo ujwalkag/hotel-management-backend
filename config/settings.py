@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     'apps.bills',
     'apps.notifications',
     'apps.inventory',
+    'apps.staff_management',
 ]
 
 # Middleware

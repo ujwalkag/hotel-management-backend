@@ -19,6 +19,8 @@ urlpatterns = [
     path('api/notifications/', include('apps.notifications.urls')),
     path('api/rooms/bookings/', include('apps.rooms.urls')),
     path('api/auth/verify/', verify_token, name='token_verify'),
+    path('api/staff-management/', include('apps.staff_management.urls')),
+    #path('api/staff-management/', include('apps.staff_management.urls')),
 
     #path('api/staff/', include('apps.staff.urls')), 
 ]
