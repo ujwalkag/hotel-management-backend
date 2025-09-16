@@ -278,7 +278,7 @@ class OrderSession(models.Model):
         )['total'] or Decimal('0.00')
 
         # Calculate tax (assuming 18% GST)
-        self.tax_amount = self.total_amount * Decimal('0.18')
+        self.tax_amount = self.total_amount * Decimal('0.05')
         self.final_amount = self.total_amount + self.tax_amount - self.discount_amount
         self.save()
 

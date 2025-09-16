@@ -1,4 +1,4 @@
-# apps/restaurant/serializers.py - Serializers for Restaurant/KDS System
+# apps/restaurant/serializers.py - Serializers for Restaurant/KDS System - FIXED
 from rest_framework import serializers
 from .models import (
     Table, MenuCategory, MenuItem, Order, OrderSession, KitchenDisplaySettings
@@ -128,11 +128,22 @@ class MenuItemCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Preparation time cannot be negative")
         return value
 
+# ✅ FIXED: UserSerializer - removed first_name and last_name
 class UserSerializer(serializers.ModelSerializer):
-    """Simple user serializer for order tracking"""
+    """Simple user serializer for order tracking - FIXED to match CustomUser model"""
+    display_name = serializers.SerializerMethodField()
+
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'first_name', 'last_name', 'role']
+        fields = ['id', 'email', 'role', 'display_name']
+
+    def get_display_name(self, obj):
+        """Get a display name for the user"""
+        if obj.email:
+            # Use part before @ as display name, or just email
+            username = obj.email.split('@')[0]
+            return f"{username} ({obj.role})" if obj.role else username
+        return obj.role or "Unknown User"
 
 class OrderSerializer(serializers.ModelSerializer):
     """Detailed serializer for Order model"""
@@ -218,9 +229,12 @@ class OrderKDSSerializer(serializers.ModelSerializer):
         ]
 
     def get_created_by_name(self, obj):
-        """Get creator's name for display"""
+        """Get creator's name for display - FIXED"""
         if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.email
+            if obj.created_by.email:
+                username = obj.created_by.email.split('@')[0]
+                return f"{username} ({obj.created_by.role})" if obj.created_by.role else username
+            return obj.created_by.role or "Unknown"
         return "Unknown"
 
     def get_time_since_created(self, obj):
@@ -248,8 +262,12 @@ class OrderSummarySerializer(serializers.ModelSerializer):
         ]
 
     def get_created_by_name(self, obj):
+        """Get creator's name for display - FIXED"""
         if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.email
+            if obj.created_by.email:
+                username = obj.created_by.email.split('@')[0]
+                return f"{username} ({obj.created_by.role})" if obj.created_by.role else username
+            return obj.created_by.role or "Unknown"
         return "Unknown"
 
 class OrderStatusUpdateSerializer(serializers.Serializer):
@@ -281,7 +299,7 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
         return value
 
 class BulkOrderCreateSerializer(serializers.Serializer):
-    """Serializer for creating multiple orders at once"""
+    """Serializer for creating multiple orders at once - UPDATED to handle both menu systems"""
     table = serializers.PrimaryKeyRelatedField(queryset=Table.objects.filter(is_active=True))
     orders = serializers.ListField(
         child=serializers.DictField(),
@@ -291,7 +309,7 @@ class BulkOrderCreateSerializer(serializers.Serializer):
     special_instructions = serializers.CharField(required=False, allow_blank=True)
 
     def validate_orders(self, value):
-        """Validate individual orders in the bulk request"""
+        """Validate individual orders - HANDLES BOTH MENU SYSTEMS"""
         validated_orders = []
 
         for order_data in value:
@@ -301,17 +319,68 @@ class BulkOrderCreateSerializer(serializers.Serializer):
                     "Each order must have 'menu_item' and 'quantity'"
                 )
 
-            # Validate menu item exists and is available
+            menu_item_id = order_data['menu_item']
+            menu_item = None
+            
+            # ✅ TRY RESTAURANT MENU FIRST
             try:
                 menu_item = MenuItem.objects.get(
-                    id=order_data['menu_item'],
+                    id=menu_item_id,
                     is_active=True,
                     availability='available'
                 )
+                print(f"✅ Found in restaurant menu: {menu_item.name}")
+                
             except MenuItem.DoesNotExist:
-                raise serializers.ValidationError(
-                    f"Menu item {order_data['menu_item']} not found or unavailable"
-                )
+                # ✅ FALLBACK TO OLD MENU SYSTEM  
+                try:
+                    from apps.menu.models import MenuItem as OldMenuItem, MenuCategory as OldMenuCategory
+                    old_item = OldMenuItem.objects.get(
+                        id=menu_item_id,
+                        available=True
+                    )
+                    print(f"✅ Found in old menu: {old_item.name_en}")
+                    
+                    # ✅ AUTO-CREATE RESTAURANT MENU ITEM
+                    if old_item.category:
+                        category, created = MenuCategory.objects.get_or_create(
+                            name=old_item.category.name_en,
+                            defaults={
+                                'description': f'Migrated from old menu: {old_item.category.name_hi}',
+                                'is_active': True,
+                                'display_order': 0
+                            }
+                        )
+                        if created:
+                            print(f"✅ Created restaurant category: {category.name}")
+                    else:
+                        category = None
+                    
+                    menu_item, created = MenuItem.objects.get_or_create(
+                        name=old_item.name_en,
+                        defaults={
+                            'description': old_item.description_en or old_item.description_hi or '',
+                            'category': category,
+                            'price': old_item.price,
+                            'availability': 'available',
+                            'preparation_time': 15,  # Default preparation time
+                            'is_veg': True,  # Default - can be enhanced based on your data
+                            'is_spicy': False,  # Default - can be enhanced
+                            'is_active': True,
+                            'image_url': '',  # Convert from old_item.image if needed
+                            'display_order': 0
+                        }
+                    )
+                    
+                    if created:
+                        print(f"✅ Created restaurant menu item: {menu_item.name} (₹{menu_item.price})")
+                    else:
+                        print(f"✅ Using existing restaurant menu item: {menu_item.name}")
+                        
+                except Exception as e:
+                    raise serializers.ValidationError(
+                        f"Menu item {menu_item_id} not found in either menu system: {str(e)}"
+                    )
 
             # Validate quantity
             quantity = order_data['quantity']
@@ -356,6 +425,7 @@ class BulkOrderCreateSerializer(serializers.Serializer):
             )
 
             created_orders.append(order)
+            print(f"✅ Created order: {order.order_number} - {order.menu_item.name} x{order.quantity}")
 
         return created_orders
 
@@ -377,8 +447,12 @@ class OrderSessionSerializer(serializers.ModelSerializer):
         read_only_fields = ['session_id', 'created_at', 'completed_at']
 
     def get_created_by_name(self, obj):
+        """Get creator's name for display - FIXED"""
         if obj.created_by:
-            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.email
+            if obj.created_by.email:
+                username = obj.created_by.email.split('@')[0]
+                return f"{username} ({obj.created_by.role})" if obj.created_by.role else username
+            return obj.created_by.role or "Unknown"
         return "Unknown"
 
     def get_session_orders(self, obj):
@@ -435,4 +509,3 @@ class TableAnalyticsSerializer(serializers.Serializer):
     average_occupancy_time = serializers.FloatField()
     table_turnover_rate = serializers.FloatField()
     revenue_per_table = serializers.JSONField()
-
