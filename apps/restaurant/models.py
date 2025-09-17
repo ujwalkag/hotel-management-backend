@@ -1,4 +1,4 @@
-# apps/restaurant/models.py - Kitchen Display System Models
+# apps/restaurant/models.py - Enhanced Kitchen Display System Models with Admin Functionality
 from django.db import models
 from apps.users.models import CustomUser
 from decimal import Decimal
@@ -6,9 +6,10 @@ from django.utils import timezone
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 import uuid
+import json
 
 class Table(models.Model):
-    """Restaurant table management"""
+    """Restaurant table management with enhanced admin functionality"""
     STATUS_CHOICES = [
         ('free', 'Free'),
         ('occupied', 'Occupied'),
@@ -24,8 +25,15 @@ class Table(models.Model):
     last_occupied_at = models.DateTimeField(null=True, blank=True)
     last_billed_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
+    
+    # Enhanced fields for better management
+    qr_code_url = models.URLField(blank=True, help_text='QR code for mobile ordering')
+    notes = models.TextField(blank=True, help_text='Admin notes about the table')
+    priority_level = models.IntegerField(default=1, help_text='1=Normal, 2=VIP, 3=Premium')
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
 
     class Meta:
         db_table = 'restaurant_table'
@@ -53,15 +61,30 @@ class Table(models.Model):
 
     def get_active_orders(self):
         """Get all active orders for this table"""
-        return self.orders.filter(status__in=['pending', 'preparing', 'ready'])
+        return self.orders.filter(status__in=['pending', 'confirmed', 'preparing', 'ready'])
 
     def get_total_bill_amount(self):
         """Calculate total bill amount for active orders"""
-        return self.orders.filter(
-            status__in=['pending', 'preparing', 'ready', 'served']
-        ).aggregate(
-            total=models.Sum(models.F('quantity') * models.F('menu_item__price'))
-        )['total'] or Decimal('0.00')
+        active_orders = self.get_active_orders()
+        total = sum(order.total_price for order in active_orders)
+        return Decimal(str(total))
+
+    def get_session_orders(self):
+        """Get orders from current active session"""
+        active_session = self.order_sessions.filter(is_active=True).first()
+        if active_session:
+            return self.orders.filter(
+                created_at__gte=active_session.created_at,
+                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+            )
+        return self.orders.none()
+
+    def get_occupancy_duration(self):
+        """Get current occupancy duration in minutes"""
+        if self.status == 'occupied' and self.last_occupied_at:
+            duration = timezone.now() - self.last_occupied_at
+            return int(duration.total_seconds() / 60)
+        return 0
 
 class MenuCategory(models.Model):
     """Menu item categories"""
@@ -123,7 +146,7 @@ class MenuItem(models.Model):
         return 0
 
 class Order(models.Model):
-    """Restaurant orders"""
+    """Restaurant orders with enhanced tracking"""
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('confirmed', 'Confirmed'),
@@ -140,6 +163,13 @@ class Order(models.Model):
         ('urgent', 'Urgent')
     ]
 
+    SOURCE_CHOICES = [
+        ('dine_in', 'Dine In'),
+        ('mobile', 'Mobile Order'),
+        ('takeaway', 'Takeaway'),
+        ('delivery', 'Delivery')
+    ]
+
     # Order identification
     order_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     order_number = models.CharField(max_length=20, unique=True, blank=True)
@@ -154,6 +184,7 @@ class Order(models.Model):
     # Order management
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='normal')
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='dine_in')
     special_instructions = models.TextField(blank=True)
 
     # Staff tracking
@@ -172,6 +203,11 @@ class Order(models.Model):
     # Estimated times
     estimated_preparation_time = models.PositiveIntegerField(null=True, blank=True)
     estimated_ready_time = models.DateTimeField(null=True, blank=True)
+
+    # Admin fields
+    admin_notes = models.TextField(blank=True, help_text='Admin notes for this order')
+    is_kds_notified = models.BooleanField(default=False, help_text='Whether KDS was notified')
+    backup_data = models.JSONField(default=dict, help_text='Backup data for offline orders')
 
     class Meta:
         db_table = 'restaurant_order'
@@ -245,69 +281,115 @@ class Order(models.Model):
         broadcast_order_update(self, old_status)
 
 class OrderSession(models.Model):
-    """Track order sessions for billing"""
+    """Enhanced order sessions for comprehensive billing"""
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('paid', 'Paid'),
+        ('partial', 'Partial'),
+        ('cancelled', 'Cancelled'),
+        ('refunded', 'Refunded')
+    ]
+
+    PAYMENT_METHOD_CHOICES = [
+        ('cash', 'Cash'),
+        ('card', 'Card'),
+        ('upi', 'UPI'),
+        ('online', 'Online'),
+        ('mixed', 'Mixed Payment')
+    ]
+
     session_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     table = models.ForeignKey(Table, on_delete=models.CASCADE, related_name='order_sessions')
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     is_active = models.BooleanField(default=True)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
+    # Financial details
+    subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     final_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    payment_status = models.CharField(max_length=20, default='pending')
+    
+    # Payment details
+    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, blank=True)
+    payment_details = models.JSONField(default=dict, help_text='Payment breakdown for mixed payments')
+    
+    # Admin and operational
     notes = models.TextField(blank=True)
+    admin_notes = models.TextField(blank=True, help_text='Admin notes for billing')
+    receipt_number = models.CharField(max_length=20, blank=True)
+    printed_at = models.DateTimeField(null=True, blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    billed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='sessions_billed')
 
     class Meta:
         db_table = 'restaurant_order_session'
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"Session {self.session_id} - Table {self.table.table_number}"
+        return f"Session {self.receipt_number or self.session_id} - Table {self.table.table_number}"
 
     def calculate_totals(self):
-        """Calculate session totals"""
-        orders = self.table.orders.filter(
+        """Calculate session totals with enhanced pricing"""
+        orders = self.get_session_orders()
+        
+        self.subtotal_amount = sum(order.total_price for order in orders)
+        
+        # Apply percentage discount if set
+        if self.discount_percentage > 0:
+            self.discount_amount = self.subtotal_amount * (self.discount_percentage / 100)
+        
+        # Calculate tax (5% GST by default)
+        taxable_amount = self.subtotal_amount - self.discount_amount
+        self.tax_amount = taxable_amount * Decimal('0.05')
+        
+        # Service charge (optional)
+        if not self.service_charge:
+            self.service_charge = Decimal('0.00')
+        
+        self.final_amount = (
+            self.subtotal_amount 
+            - self.discount_amount 
+            + self.tax_amount 
+            + self.service_charge
+        )
+        
+        # Generate receipt number
+        if not self.receipt_number:
+            self.receipt_number = f"RCP{timezone.now().strftime('%Y%m%d')}{OrderSession.objects.count() + 1:04d}"
+        
+        self.save()
+
+    def get_session_orders(self):
+        """Get all orders in this session"""
+        return self.table.orders.filter(
             created_at__gte=self.created_at,
             status__in=['confirmed', 'preparing', 'ready', 'served']
         )
 
-        self.total_amount = orders.aggregate(
-            total=models.Sum('total_price')
-        )['total'] or Decimal('0.00')
-
-        # Calculate tax (assuming 18% GST)
-        self.tax_amount = self.total_amount * Decimal('0.05')
-        self.final_amount = self.total_amount + self.tax_amount - self.discount_amount
-        self.save()
-
-    def complete_session(self):
+    def complete_session(self, user=None):
         """Complete the order session and free the table"""
         self.is_active = False
         self.completed_at = timezone.now()
-        self.payment_status = 'completed'
+        self.payment_status = 'paid'
+        if user:
+            self.billed_by = user
         self.save()
 
         # Free the table
         self.table.mark_free()
 
-# Signal handlers for automatic table management
-@receiver(post_save, sender=Order)
-def handle_order_created(sender, instance, created, **kwargs):
-    """Automatically mark table as occupied when first order is placed"""
-    if created and instance.table.status == 'free':
-        instance.table.mark_occupied()
-
-@receiver(post_save, sender=OrderSession)
-def handle_session_completed(sender, instance, **kwargs):
-    """Handle session completion"""
-    if not instance.is_active and instance.payment_status == 'completed':
-        # Additional cleanup can be added here
-        pass
+    def print_bill(self):
+        """Mark bill as printed"""
+        self.printed_at = timezone.now()
+        self.save()
 
 class KitchenDisplaySettings(models.Model):
-    """Settings for Kitchen Display System"""
+    """Enhanced settings for Kitchen Display System"""
     name = models.CharField(max_length=100, unique=True)
     audio_enabled = models.BooleanField(default=True)
     auto_refresh_interval = models.PositiveIntegerField(default=30, help_text='Refresh interval in seconds')
@@ -317,6 +399,13 @@ class KitchenDisplaySettings(models.Model):
     show_preparation_time = models.BooleanField(default=True)
     show_order_notes = models.BooleanField(default=True)
     max_orders_per_screen = models.PositiveIntegerField(default=20)
+    
+    # Enhanced features
+    offline_mode_enabled = models.BooleanField(default=True, help_text='Store orders when offline')
+    notification_sound_volume = models.DecimalField(max_digits=3, decimal_places=2, default=0.8)
+    auto_confirm_orders = models.BooleanField(default=False)
+    group_orders_by_table = models.BooleanField(default=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -326,3 +415,39 @@ class KitchenDisplaySettings(models.Model):
     def __str__(self):
         return self.name
 
+# New model for offline order backup
+class OfflineOrderBackup(models.Model):
+    """Backup for orders when kitchen display is offline"""
+    order_data = models.JSONField(help_text='Complete order data')
+    table_number = models.CharField(max_length=10)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    is_processed = models.BooleanField(default=False)
+    
+    class Meta:
+        db_table = 'offline_order_backup'
+        ordering = ['created_at']
+
+# Enhanced Signal handlers
+@receiver(post_save, sender=Order)
+def handle_order_created(sender, instance, created, **kwargs):
+    """Enhanced order creation handler"""
+    if created:
+        # Mark table as occupied if it's the first order
+        if instance.table.status == 'free':
+            instance.table.mark_occupied()
+        
+        # Create backup if KDS might be offline
+        try:
+            from .utils import is_kds_connected, create_order_backup
+            if not is_kds_connected():
+                create_order_backup(instance)
+        except Exception:
+            pass  # Fail silently to not break order creation
+
+@receiver(post_save, sender=OrderSession)
+def handle_session_completed(sender, instance, **kwargs):
+    """Handle session completion with enhanced features"""
+    if not instance.is_active and instance.payment_status in ['paid', 'partial']:
+        # Additional cleanup and notifications can be added here
+        pass

@@ -1,14 +1,18 @@
-# apps/restaurant/utils.py - Utility functions for real-time updates
+# apps/restaurant/utils.py - Enhanced utility functions with offline support
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.utils import timezone
+from django.core.cache import cache
 import logging
+import json
+import requests
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
 
 def broadcast_order_update(order, old_status=None):
-    """Broadcast order updates to all connected clients"""
+    """Enhanced broadcast order updates with offline handling"""
     try:
         from .serializers import OrderKDSSerializer, OrderSerializer
 
@@ -21,10 +25,18 @@ def broadcast_order_update(order, old_status=None):
         # Determine update type
         if old_status is None:
             update_type = 'new_order'
-            audio_enabled = True  # New orders should trigger audio
+            audio_enabled = True
         else:
             update_type = 'order_updated'
-            audio_enabled = False  # Status updates don't need audio
+            audio_enabled = False
+
+        # Store in cache for offline clients
+        cache_key = f"order_update_{order.id}_{timestamp}"
+        cache.set(cache_key, {
+            'type': update_type,
+            'order': kds_data,
+            'timestamp': timestamp
+        }, timeout=3600)  # 1 hour
 
         # Broadcast to Kitchen Display System
         if channel_layer:
@@ -70,12 +82,20 @@ def broadcast_order_update(order, old_status=None):
         logger.error(f"Error broadcasting order update: {e}")
 
 def broadcast_table_update(table, old_status=None):
-    """Broadcast table status updates to all connected clients"""
+    """Enhanced broadcast table status updates"""
     try:
         from .serializers import TableSerializer
 
         table_data = TableSerializer(table).data
         timestamp = timezone.now().isoformat()
+
+        # Store in cache
+        cache_key = f"table_update_{table.id}_{timestamp}"
+        cache.set(cache_key, {
+            'type': 'table_updated',
+            'table': table_data,
+            'timestamp': timestamp
+        }, timeout=3600)
 
         if channel_layer:
             # Broadcast to all relevant channels
@@ -103,150 +123,361 @@ def broadcast_table_update(table, old_status=None):
     except Exception as e:
         logger.error(f"Error broadcasting table update: {e}")
 
-def broadcast_menu_update(menu_item, update_type='updated'):
-    """Broadcast menu item updates to ordering clients"""
+def is_kds_connected():
+    """Check if Kitchen Display System is connected"""
     try:
-        from .serializers import MenuItemSerializer
-
-        item_data = MenuItemSerializer(menu_item).data
-        timestamp = timezone.now().isoformat()
-
-        if channel_layer:
-            async_to_sync(channel_layer.group_send)(
-                'ordering_ordering',
-                {
-                    'type': 'menu_item_updated',
-                    'item': item_data,
-                    'update_type': update_type,
-                    'timestamp': timestamp
-                }
-            )
-
-        logger.info(f"Broadcasted menu update: {menu_item.name} - {update_type}")
-
+        # Check if there are active WebSocket connections for KDS
+        connection_count = cache.get('kds_connection_count', 0)
+        last_heartbeat = cache.get('kds_last_heartbeat')
+        
+        if connection_count > 0 and last_heartbeat:
+            # Check if last heartbeat was within last 60 seconds
+            heartbeat_time = timezone.datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+            time_diff = (timezone.now() - heartbeat_time).total_seconds()
+            return time_diff < 60
+            
+        return False
     except Exception as e:
-        logger.error(f"Error broadcasting menu update: {e}")
+        logger.error(f"Error checking KDS connection: {e}")
+        return False
 
-def broadcast_settings_update(settings_data):
-    """Broadcast KDS settings updates"""
+def update_kds_heartbeat():
+    """Update KDS heartbeat timestamp"""
+    cache.set('kds_last_heartbeat', timezone.now().isoformat(), timeout=120)
+
+def increment_kds_connections():
+    """Increment KDS connection count"""
+    current_count = cache.get('kds_connection_count', 0)
+    cache.set('kds_connection_count', current_count + 1, timeout=None)
+    update_kds_heartbeat()
+
+def decrement_kds_connections():
+    """Decrement KDS connection count"""
+    current_count = cache.get('kds_connection_count', 0)
+    new_count = max(0, current_count - 1)
+    cache.set('kds_connection_count', new_count, timeout=None)
+
+def create_order_backup(order):
+    """Create backup for order when KDS is offline"""
     try:
-        timestamp = timezone.now().isoformat()
-
-        if channel_layer:
-            async_to_sync(channel_layer.group_send)(
-                'kds_kitchen_display',
-                {
-                    'type': 'settings_updated',
-                    'settings': settings_data,
-                    'timestamp': timestamp
-                }
-            )
-
-        logger.info("Broadcasted KDS settings update")
-
-    except Exception as e:
-        logger.error(f"Error broadcasting settings update: {e}")
-
-def get_kds_summary_data():
-    """Get summary data for KDS dashboard"""
-    try:
-        from .models import Order, Table
-        from django.db.models import Count
-
-        # Order status counts
-        order_counts = Order.objects.filter(
-            status__in=['pending', 'confirmed', 'preparing', 'ready']
-        ).values('status').annotate(count=Count('id'))
-
-        status_summary = {}
-        for item in order_counts:
-            status_summary[item['status']] = item['count']
-
-        # Table status counts
-        table_counts = Table.objects.filter(is_active=True).values('status').annotate(
-            count=Count('id')
+        from .models import OfflineOrderBackup
+        from .serializers import OrderSerializer
+        
+        order_data = OrderSerializer(order).data
+        
+        OfflineOrderBackup.objects.create(
+            order_data=order_data,
+            table_number=order.table.table_number
         )
+        
+        logger.info(f"Created offline backup for order: {order.order_number}")
+        
+    except Exception as e:
+        logger.error(f"Error creating order backup: {e}")
 
-        table_summary = {}
-        for item in table_counts:
-            table_summary[item['status']] = item['count']
+def process_offline_orders():
+    """Process orders that were created when KDS was offline"""
+    try:
+        from .models import OfflineOrderBackup
+        
+        # Get unprocessed offline orders
+        offline_orders = OfflineOrderBackup.objects.filter(is_processed=False)
+        
+        processed_count = 0
+        for backup in offline_orders:
+            try:
+                # Broadcast the order to KDS if now connected
+                if is_kds_connected():
+                    # Simulate order broadcast
+                    order_data = backup.order_data
+                    
+                    if channel_layer:
+                        async_to_sync(channel_layer.group_send)(
+                            'kds_kitchen_display',
+                            {
+                                'type': 'new_order_notification',
+                                'order': order_data,
+                                'audio_enabled': True,
+                                'timestamp': timezone.now().isoformat(),
+                                'offline_order': True
+                            }
+                        )
+                    
+                    # Mark as processed
+                    backup.is_processed = True
+                    backup.processed_at = timezone.now()
+                    backup.save()
+                    
+                    processed_count += 1
+                    
+            except Exception as e:
+                logger.error(f"Error processing offline order {backup.id}: {e}")
+        
+        logger.info(f"Processed {processed_count} offline orders")
+        return processed_count
+        
+    except Exception as e:
+        logger.error(f"Error processing offline orders: {e}")
+        return 0
 
+def generate_receipt_data(session):
+    """Generate receipt data for printing"""
+    try:
+        orders = session.get_session_orders()
+        
+        receipt_data = {
+            'restaurant_info': {
+                'name': 'Hotel Management Restaurant',
+                'address': 'Your Restaurant Address',
+                'phone': 'Your Phone Number',
+                'gst_number': 'Your GST Number'
+            },
+            'receipt_details': {
+                'receipt_number': session.receipt_number,
+                'table_number': session.table.table_number,
+                'date': session.created_at.strftime('%Y-%m-%d'),
+                'time': session.created_at.strftime('%H:%M:%S'),
+                'server': session.created_by.get_full_name() if session.created_by else 'System'
+            },
+            'items': [
+                {
+                    'name': order.menu_item.name,
+                    'quantity': order.quantity,
+                    'unit_price': float(order.unit_price),
+                    'total_price': float(order.total_price),
+                    'notes': order.special_instructions
+                }
+                for order in orders
+            ],
+            'totals': {
+                'subtotal': float(session.subtotal_amount),
+                'discount': float(session.discount_amount),
+                'tax': float(session.tax_amount),
+                'service_charge': float(session.service_charge),
+                'final_amount': float(session.final_amount)
+            },
+            'payment': {
+                'method': session.payment_method,
+                'status': session.payment_status
+            },
+            'notes': session.notes,
+            'admin_notes': session.admin_notes,
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        return receipt_data
+        
+    except Exception as e:
+        logger.error(f"Error generating receipt data: {e}")
+        return None
+
+def calculate_gst_breakdown(amount, gst_rate=0.05):
+    """Calculate GST breakdown for billing"""
+    try:
+        gst_amount = amount * Decimal(str(gst_rate))
+        cgst = gst_amount / 2  # Central GST
+        sgst = gst_amount / 2  # State GST
+        
         return {
-            'orders': status_summary,
-            'tables': table_summary,
+            'total_gst': float(gst_amount),
+            'cgst': float(cgst),
+            'sgst': float(sgst),
+            'gst_rate': float(gst_rate * 100)
+        }
+    except Exception as e:
+        logger.error(f"Error calculating GST: {e}")
+        return {
+            'total_gst': 0.0,
+            'cgst': 0.0,
+            'sgst': 0.0,
+            'gst_rate': 0.0
+        }
+
+def validate_table_operations(table, operation):
+    """Validate table operations based on current state"""
+    try:
+        validations = {
+            'occupy': {
+                'allowed_statuses': ['free', 'reserved'],
+                'message': 'Table must be free or reserved to occupy'
+            },
+            'free': {
+                'allowed_statuses': ['occupied', 'cleaning'],
+                'message': 'Can only free occupied or cleaning tables'
+            },
+            'reserve': {
+                'allowed_statuses': ['free'],
+                'message': 'Can only reserve free tables'
+            },
+            'clean': {
+                'allowed_statuses': ['free'],
+                'message': 'Can only clean free tables'
+            },
+            'maintenance': {
+                'allowed_statuses': ['free', 'cleaning'],
+                'message': 'Can only put free or cleaning tables under maintenance'
+            },
+            'delete': {
+                'allowed_statuses': ['free'],
+                'additional_checks': lambda t: t.get_active_orders().count() == 0,
+                'message': 'Can only delete free tables with no active orders'
+            }
+        }
+        
+        validation = validations.get(operation)
+        if not validation:
+            return False, 'Unknown operation'
+        
+        if table.status not in validation['allowed_statuses']:
+            return False, validation['message']
+        
+        # Additional checks if specified
+        if 'additional_checks' in validation:
+            if not validation['additional_checks'](table):
+                return False, validation['message']
+        
+        return True, 'Operation allowed'
+        
+    except Exception as e:
+        logger.error(f"Error validating table operation: {e}")
+        return False, 'Validation error'
+
+def get_order_status_history(order):
+    """Get status change history for an order"""
+    try:
+        history = []
+        
+        if order.created_at:
+            history.append({
+                'status': 'pending',
+                'timestamp': order.created_at,
+                'user': order.created_by.get_full_name() if order.created_by else 'System'
+            })
+        
+        if order.confirmed_at:
+            history.append({
+                'status': 'confirmed',
+                'timestamp': order.confirmed_at,
+                'user': order.confirmed_by.get_full_name() if order.confirmed_by else 'System'
+            })
+        
+        if order.preparation_started_at:
+            history.append({
+                'status': 'preparing',
+                'timestamp': order.preparation_started_at,
+                'user': order.prepared_by.get_full_name() if order.prepared_by else 'System'
+            })
+        
+        if order.ready_at:
+            history.append({
+                'status': 'ready',
+                'timestamp': order.ready_at,
+                'user': 'Kitchen'
+            })
+        
+        if order.served_at:
+            history.append({
+                'status': 'served',
+                'timestamp': order.served_at,
+                'user': order.served_by.get_full_name() if order.served_by else 'System'
+            })
+        
+        return history
+        
+    except Exception as e:
+        logger.error(f"Error getting order status history: {e}")
+        return []
+
+def send_notification(notification_type, data, recipients=None):
+    """Send notifications to staff"""
+    try:
+        # This is a placeholder for notification system
+        # You can integrate with email, SMS, or push notification services
+        
+        notification_data = {
+            'type': notification_type,
+            'data': data,
+            'timestamp': timezone.now().isoformat(),
+            'recipients': recipients or []
+        }
+        
+        # Store in cache for now
+        cache_key = f"notification_{timezone.now().timestamp()}"
+        cache.set(cache_key, notification_data, timeout=3600)
+        
+        logger.info(f"Notification sent: {notification_type}")
+        
+    except Exception as e:
+        logger.error(f"Error sending notification: {e}")
+
+def cleanup_old_data():
+    """Cleanup old data periodically"""
+    try:
+        from .models import OfflineOrderBackup
+        
+        # Clean up processed offline orders older than 7 days
+        cutoff_date = timezone.now() - timezone.timedelta(days=7)
+        
+        deleted_count = OfflineOrderBackup.objects.filter(
+            is_processed=True,
+            processed_at__lt=cutoff_date
+        ).delete()[0]
+        
+        # Clear old cache entries
+        # This would need to be implemented based on your cache backend
+        
+        logger.info(f"Cleaned up {deleted_count} old offline order backups")
+        
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+def get_system_health():
+    """Get system health information"""
+    try:
+        from .models import Order, Table, OrderSession, OfflineOrderBackup
+        
+        health_data = {
+            'database': {
+                'status': 'healthy',
+                'active_orders': Order.objects.filter(
+                    status__in=['pending', 'preparing', 'ready']
+                ).count(),
+                'occupied_tables': Table.objects.filter(status='occupied').count(),
+                'active_sessions': OrderSession.objects.filter(is_active=True).count()
+            },
+            'kds': {
+                'connected': is_kds_connected(),
+                'offline_orders': OfflineOrderBackup.objects.filter(
+                    is_processed=False
+                ).count()
+            },
+            'cache': {
+                'status': 'healthy' if cache.get('health_check') else 'warning'
+            },
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        # Set health check cache
+        cache.set('health_check', True, timeout=300)  # 5 minutes
+        
+        return health_data
+        
+    except Exception as e:
+        logger.error(f"Error getting system health: {e}")
+        return {
+            'status': 'error',
+            'message': str(e),
             'timestamp': timezone.now().isoformat()
         }
 
-    except Exception as e:
-        logger.error(f"Error getting KDS summary data: {e}")
-        return {}
-
-def calculate_wait_times():
-    """Calculate average wait times for different order statuses"""
-    try:
-        from .models import Order
-        from django.utils import timezone
-
-        now = timezone.now()
-
-        # Orders in different stages
-        pending_orders = Order.objects.filter(status='pending')
-        preparing_orders = Order.objects.filter(status='preparing')
-        ready_orders = Order.objects.filter(status='ready')
-
-        wait_times = {}
-
-        # Calculate average wait time for pending orders
-        if pending_orders.exists():
-            pending_times = []
-            for order in pending_orders:
-                wait_time = (now - order.created_at).total_seconds() / 60
-                pending_times.append(wait_time)
-            wait_times['pending_avg'] = sum(pending_times) / len(pending_times)
-        else:
-            wait_times['pending_avg'] = 0
-
-        # Calculate average preparation time for preparing orders
-        if preparing_orders.exists():
-            prep_times = []
-            for order in preparing_orders:
-                if order.preparation_started_at:
-                    prep_time = (now - order.preparation_started_at).total_seconds() / 60
-                    prep_times.append(prep_time)
-            if prep_times:
-                wait_times['preparing_avg'] = sum(prep_times) / len(prep_times)
-            else:
-                wait_times['preparing_avg'] = 0
-        else:
-            wait_times['preparing_avg'] = 0
-
-        # Calculate wait time for ready orders
-        if ready_orders.exists():
-            ready_times = []
-            for order in ready_orders:
-                if order.ready_at:
-                    ready_time = (now - order.ready_at).total_seconds() / 60
-                    ready_times.append(ready_time)
-            if ready_times:
-                wait_times['ready_avg'] = sum(ready_times) / len(ready_times)
-            else:
-                wait_times['ready_avg'] = 0
-        else:
-            wait_times['ready_avg'] = 0
-
-        return wait_times
-
-    except Exception as e:
-        logger.error(f"Error calculating wait times: {e}")
-        return {}
-
+# Utility functions for color coding and formatting
 def get_order_priority_color(priority):
     """Get color coding for order priority"""
     colors = {
-        'low': '#6B7280',      # Gray
-        'normal': '#3B82F6',   # Blue
-        'high': '#F59E0B',     # Orange
-        'urgent': '#EF4444'    # Red
+        'low': '#6B7280',     # Gray
+        'normal': '#3B82F6',  # Blue
+        'high': '#F59E0B',    # Orange
+        'urgent': '#EF4444'   # Red
     }
     return colors.get(priority, '#3B82F6')
 
@@ -273,65 +504,9 @@ def format_preparation_time(minutes):
         remaining_minutes = int(minutes % 60)
         return f"{hours}h {remaining_minutes}m"
 
-def generate_order_notification_sound():
-    """Generate audio notification data for new orders"""
-    return {
-        'play': True,
-        'sound_type': 'new_order',
-        'volume': 0.8,
-        'repeat': 1
-    }
-
-def log_order_activity(order, action, user=None):
-    """Log order activity for audit trail"""
+def format_currency(amount):
+    """Format currency for display"""
     try:
-        from .models import OrderActivity
-
-        OrderActivity.objects.create(
-            order=order,
-            action=action,
-            performed_by=user,
-            details={
-                'order_status': order.status,
-                'table_number': order.table.table_number,
-                'menu_item': order.menu_item.name,
-                'timestamp': timezone.now().isoformat()
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"Error logging order activity: {e}")
-
-def check_kitchen_capacity():
-    """Check current kitchen capacity and workload"""
-    try:
-        from .models import Order
-
-        # Count orders in preparation
-        preparing_orders = Order.objects.filter(status='preparing').count()
-        pending_orders = Order.objects.filter(status='pending').count()
-
-        # Calculate estimated workload
-        total_workload = preparing_orders + pending_orders
-
-        # Define capacity levels
-        if total_workload < 5:
-            capacity_status = 'low'
-        elif total_workload < 15:
-            capacity_status = 'medium'
-        elif total_workload < 25:
-            capacity_status = 'high'
-        else:
-            capacity_status = 'overloaded'
-
-        return {
-            'preparing_orders': preparing_orders,
-            'pending_orders': pending_orders,
-            'total_workload': total_workload,
-            'capacity_status': capacity_status
-        }
-
-    except Exception as e:
-        logger.error(f"Error checking kitchen capacity: {e}")
-        return {}
-
+        return f"₹{float(amount):,.2f}"
+    except (ValueError, TypeError):
+        return "₹0.00"

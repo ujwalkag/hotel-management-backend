@@ -1,5 +1,4 @@
-
-# apps/bills/enhanced_views.py - COMPLETELY UPDATED FOR TABLE-BASED DYNAMIC BILLING
+# apps/bills/enhanced_views.py - COMPLETE SOLUTION WITH CUSTOMER HANDLING
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -7,19 +6,22 @@ from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from decimal import Decimal
-from datetime import datetime, date
+from datetime import datetime
+import os
+from django.conf import settings
+from django.utils import timezone
 
+# Import correct models from your restaurant app
 from .models import Bill, BillItem
 from .serializers import BillSerializer
-from apps.tables.models import RestaurantTable, TableOrder, OrderItem, EnhancedBillingSession
-from apps.menu.models import MenuItem
-from django.utils import timezone
+from apps.restaurant.models import Table, Order, MenuItem, MenuCategory, OrderSession
+from apps.menu.models import MenuItem as MenuItemOld  # Your old menu model
+from .utils import render_to_pdf
+from django.template.loader import render_to_string
 
 class EnhancedBillingViewSet(viewsets.ModelViewSet):
     """
-    NEW Enhanced Billing System - Shows table-specific orders dynamically
-    Mobile orders for T1, T2, T3 etc. appear here automatically
-    Admin can add/edit/delete items and generate bills with GST
+    Complete Enhanced Billing System with customer handling and table freeing
     """
     queryset = Bill.objects.all()
     serializer_class = BillSerializer
@@ -29,169 +31,222 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
     def active_tables_dashboard(self, request):
         """
         GET /api/bills/enhanced/active_tables_dashboard/
-        Main dashboard showing all tables with active orders
-        This replaces the old enhanced billing - shows T1, T2, T3 etc. with orders
+        Show all occupied tables with orders ready for billing
         """
-        # Get all tables that have active orders (from mobile ordering)
-        active_tables = RestaurantTable.objects.filter(
-            status='occupied',
-            orders__status__in=['pending', 'in_progress', 'ready', 'completed']
-        ).distinct().order_by('table_number')
+        try:
+            # Get all occupied tables with active orders
+            occupied_tables = Table.objects.filter(
+                status='occupied',
+                is_active=True
+            ).distinct().order_by('table_number')
 
-        dashboard_data = []
+            dashboard_data = []
 
-        for table in active_tables:
-            # Get all active orders for this table
-            active_orders = table.orders.filter(
-                status__in=['pending', 'in_progress', 'ready', 'completed'],
-                is_in_enhanced_billing=True
-            ).order_by('-created_at')
+            for table in occupied_tables:
+                # Get all active orders for this table
+                active_orders = Order.objects.filter(
+                    table=table,
+                    status__in=['confirmed', 'preparing', 'ready', 'served']
+                ).select_related('menu_item', 'menu_item__category', 'created_by').order_by('-created_at')
 
-            # Calculate table totals
-            table_subtotal = sum(order.total_amount for order in active_orders)
+                if not active_orders.exists():
+                    continue
 
-            # Get order details for display
-            order_details = []
-            for order in active_orders:
-                order_items = []
-                for item in order.items.all():
-                    order_items.append({
-                        'id': item.id,
-                        'name': item.menu_item.name_en,
-                        'name_hi': item.menu_item.name_hi,
-                        'quantity': item.quantity,
-                        'price': float(item.price),
-                        'total': float(item.total_price),
-                        'status': item.status,
-                        'special_instructions': item.special_instructions
+                # Calculate table totals
+                table_subtotal = sum(order.total_price for order in active_orders)
+
+                # Prepare order details for display
+                order_details = []
+                customer_name = 'Guest'
+                customer_phone = ''
+
+                # Try to get customer info from order session
+                session = table.order_sessions.filter(is_active=True).first()
+                if session:
+                    customer_name = getattr(session, 'customer_name', 'Guest')
+                    customer_phone = getattr(session, 'customer_phone', '')
+
+                for order in active_orders:
+                    order_details.append({
+                        'order_id': order.id,
+                        'order_number': order.order_number,
+                        'status': order.status,
+                        'customer_name': customer_name,
+                        'menu_item_name': order.menu_item.name,
+                        'menu_category': order.menu_item.category.name if order.menu_item.category else 'No Category',
+                        'quantity': order.quantity,
+                        'unit_price': float(order.unit_price),
+                        'total_price': float(order.total_price),
+                        'special_instructions': order.special_instructions or '',
+                        'created_at': order.created_at.isoformat(),
+                        # Format for frontend compatibility
+                        'items': [{
+                            'id': order.id,
+                            'name': order.menu_item.name,
+                            'quantity': order.quantity,
+                            'price': float(order.unit_price),
+                            'total': float(order.total_price),
+                            'status': order.status,
+                            'special_instructions': order.special_instructions or ''
+                        }]
                     })
 
-                order_details.append({
-                    'order_id': order.id,
-                    'order_number': order.order_number,
-                    'status': order.status,
-                    'customer_name': order.customer_name,
-                    'customer_count': order.customer_count,
-                    'total_amount': float(order.total_amount),
-                    'created_at': order.created_at.isoformat(),
-                    'items': order_items
+                dashboard_data.append({
+                    'table_id': table.id,
+                    'table_number': table.table_number,
+                    'table_capacity': table.capacity,
+                    'table_status': table.status,
+                    'table_location': table.location or '',
+                    'orders_count': active_orders.count(),
+                    'subtotal': float(table_subtotal),
+                    'can_generate_bill': True,
+                    'last_order_time': active_orders.first().created_at.isoformat(),
+                    'customer_name': customer_name,
+                    'customer_phone': customer_phone,
+                    'orders': order_details
                 })
 
-            dashboard_data.append({
-                'table_id': table.id,
-                'table_number': table.table_number,
-                'table_capacity': table.capacity,
-                'table_status': table.status,
-                'session_id': table.current_session_id,
-                'orders_count': active_orders.count(),
-                'subtotal': float(table_subtotal),
-                'can_generate_bill': active_orders.exists(),
-                'last_order_time': active_orders.first().created_at.isoformat() if active_orders.exists() else None,
-                'orders': order_details
+            return Response({
+                'status': 'success',
+                'active_tables': dashboard_data,
+                'total_active_tables': len(dashboard_data),
+                'total_pending_revenue': float(sum(table['subtotal'] for table in dashboard_data)),
+                'timestamp': timezone.now().isoformat()
             })
 
-        return Response({
-            'status': 'success',
-            'active_tables': dashboard_data,
-            'total_active_tables': len(dashboard_data),
-            'total_pending_revenue': float(sum(table['subtotal'] for table in dashboard_data)),
-            'timestamp': timezone.now().isoformat()
-        })
+        except Exception as e:
+            return Response({
+                'error': f'Failed to fetch active tables: {str(e)}',
+                'timestamp': timezone.now().isoformat()
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'])
+    def update_customer_details(self, request):
+        """
+        POST /api/bills/enhanced/update_customer_details/
+        Update customer details for a table session
+        Body: {
+            "table_id": 1,
+            "customer_name": "John Doe", 
+            "customer_phone": "9876543210"
+        }
+        """
+        table_id = request.data.get('table_id')
+        customer_name = request.data.get('customer_name', 'Guest')
+        customer_phone = request.data.get('customer_phone', '')
+
+        if not table_id:
+            return Response({
+                'error': 'table_id is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                table = get_object_or_404(Table, id=table_id, is_active=True)
+
+                # Get or create active order session
+                session = table.order_sessions.filter(is_active=True).first()
+                if not session:
+                    session = OrderSession.objects.create(
+                        table=table,
+                        created_by=request.user,
+                        is_active=True
+                    )
+
+                # Update customer details in session
+                session.customer_name = customer_name
+                session.customer_phone = customer_phone
+                session.save()
+
+                return Response({
+                    'status': 'success',
+                    'message': f'Customer details updated for Table {table.table_number}',
+                    'customer_name': customer_name,
+                    'customer_phone': customer_phone
+                })
+
+        except Exception as e:
+            return Response({
+                'error': f'Failed to update customer details: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def add_custom_item_to_table(self, request):
         """
         POST /api/bills/enhanced/add_custom_item_to_table/
-        Admin can add custom items to any table's bill
-        Body: {
-            "table_id": 1,
-            "item_name": "Special Item",
-            "quantity": 2,
-            "price": 100.00,
-            "notes": "Custom addition"
-        }
+        Add custom items to table bill during billing process
         """
         table_id = request.data.get('table_id')
-        item_name = request.data.get('item_name')
+        item_name = request.data.get('item_name', '').strip()
         quantity = int(request.data.get('quantity', 1))
         price = Decimal(str(request.data.get('price', 0)))
-        notes = request.data.get('notes', '')
+        notes = request.data.get('notes', '').strip()
 
-        if not all([table_id, item_name, price]):
+        if not all([table_id, item_name]) or price <= 0:
             return Response({
-                'error': 'table_id, item_name, and price are required'
+                'error': 'table_id, item_name, and valid price are required'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            table = RestaurantTable.objects.get(id=table_id)
+            with transaction.atomic():
+                table = get_object_or_404(Table, id=table_id, is_active=True)
 
-            # Get or create an active order for this table
-            active_order = table.orders.filter(
-                status__in=['pending', 'in_progress', 'ready', 'completed'],
-                is_in_enhanced_billing=True
-            ).first()
-
-            if not active_order:
-                # Create a new order if none exists
-                active_order = TableOrder.objects.create(
-                    table=table,
-                    customer_name="Admin Addition",
-                    status='completed',
-                    is_in_enhanced_billing=True,
-                    enhanced_billing_notes=f"Custom item added: {item_name}"
+                # Get or create a "Custom Items" category
+                custom_category, created = MenuCategory.objects.get_or_create(
+                    name='Custom Items',
+                    defaults={
+                        'description': 'Custom items added during billing',
+                        'display_order': 999,
+                        'is_active': True
+                    }
                 )
-                table.occupy_table()
 
-            # Create a custom menu item entry or find existing
-            try:
-                # Try to find existing menu item
-                menu_item = MenuItem.objects.filter(name_en__icontains=item_name).first()
-                if not menu_item:
-                    # For custom items, we'll create a temporary reference
-                    # In production, you might want to have a "custom items" category
-                    menu_item = MenuItem.objects.create(
-                        name_en=item_name,
-                        name_hi=item_name,
-                        price=price,
-                        category=None,
-                        available=True
-                    )
-            except Exception:
+                # Create or get menu item for this custom item
+                menu_item, item_created = MenuItem.objects.get_or_create(
+                    name=item_name,
+                    category=custom_category,
+                    defaults={
+                        'description': f'Custom item: {item_name}',
+                        'price': price,
+                        'preparation_time': 5,
+                        'is_active': True,
+                        'availability': 'available',
+                        'is_veg': True
+                    }
+                )
+
+                # Update price if different
+                if menu_item.price != price:
+                    menu_item.price = price
+                    menu_item.save()
+
+                # Create new order for the custom item
+                order = Order.objects.create(
+                    table=table,
+                    menu_item=menu_item,
+                    quantity=quantity,
+                    unit_price=price,
+                    special_instructions=notes,
+                    created_by=request.user,
+                    status='served',  # Custom items are immediately ready
+                    priority='normal'
+                )
+
                 return Response({
-                    'error': 'Failed to create menu item reference'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    'status': 'success',
+                    'message': f'Added {item_name} x {quantity} to Table {table.table_number}',
+                    'order': {
+                        'id': order.id,
+                        'order_number': order.order_number,
+                        'name': order.menu_item.name,
+                        'quantity': order.quantity,
+                        'price': float(order.unit_price),
+                        'total': float(order.total_price),
+                        'status': order.status,
+                        'special_instructions': order.special_instructions
+                    }
+                })
 
-            # Add the item to the order
-            order_item = OrderItem.objects.create(
-                table_order=active_order,
-                menu_item=menu_item,
-                quantity=quantity,
-                price=price,
-                status='served',  # Custom items are considered already prepared
-                special_instructions=notes,
-                kitchen_notes="Added via Enhanced Billing"
-            )
-
-            # Update order total
-            active_order.calculate_total()
-
-            return Response({
-                'status': 'success',
-                'message': f'Added {item_name} x {quantity} to Table {table.table_number}',
-                'order_item': {
-                    'id': order_item.id,
-                    'name': order_item.menu_item.name_en,
-                    'quantity': order_item.quantity,
-                    'price': float(order_item.price),
-                    'total': float(order_item.total_price)
-                },
-                'order_total': float(active_order.total_amount)
-            })
-
-        except RestaurantTable.DoesNotExist:
-            return Response({
-                'error': 'Table not found'
-            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 'error': f'Failed to add item: {str(e)}'
@@ -201,10 +256,7 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
     def delete_item_from_table(self, request):
         """
         DELETE /api/bills/enhanced/delete_item_from_table/
-        Admin can delete items from table bills
-        Body: {
-            "order_item_id": 123
-        }
+        Remove items from table bill
         """
         order_item_id = request.data.get('order_item_id')
 
@@ -214,38 +266,34 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            order_item = OrderItem.objects.get(id=order_item_id)
-            table_order = order_item.table_order
-            table = table_order.table
+            with transaction.atomic():
+                order = get_object_or_404(Order, id=order_item_id)
+                table = order.table
+                item_info = {
+                    'name': order.menu_item.name,
+                    'quantity': order.quantity,
+                    'total_price': float(order.total_price)
+                }
 
-            # Delete the item
-            item_name = order_item.menu_item.name_en
-            item_quantity = order_item.quantity
-            order_item.delete()
+                # Delete the order
+                order.delete()
 
-            # Recalculate order total
-            table_order.calculate_total()
+                return Response({
+                    'status': 'success',
+                    'message': f'Deleted {item_info["name"]} x {item_info["quantity"]} from Table {table.table_number}',
+                    'deleted_item': item_info
+                })
 
+        except Exception as e:
             return Response({
-                'status': 'success',
-                'message': f'Deleted {item_name} x {item_quantity} from Table {table.table_number}',
-                'order_total': float(table_order.total_amount)
-            })
-
-        except OrderItem.DoesNotExist:
-            return Response({
-                'error': 'Order item not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+                'error': f'Failed to delete item: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['patch'])
     def update_item_quantity(self, request):
         """
         PATCH /api/bills/enhanced/update_item_quantity/
-        Admin can update item quantities
-        Body: {
-            "order_item_id": 123,
-            "new_quantity": 3
-        }
+        Update quantity of items in table bill
         """
         order_item_id = request.data.get('order_item_id')
         new_quantity = request.data.get('new_quantity')
@@ -257,60 +305,48 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
 
         try:
             new_quantity = int(new_quantity)
-            if new_quantity < 0:
-                return Response({
-                    'error': 'Quantity must be positive'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            elif new_quantity == 0:
-                # Delete the item if quantity is 0
+            if new_quantity <= 0:
+                # If quantity is 0 or negative, delete the item
                 return self.delete_item_from_table(request)
 
-            order_item = OrderItem.objects.get(id=order_item_id)
-            old_quantity = order_item.quantity
-            order_item.quantity = new_quantity
-            order_item.save()
+            with transaction.atomic():
+                order = get_object_or_404(Order, id=order_item_id)
+                old_quantity = order.quantity
+                old_total = float(order.total_price)
 
-            # Recalculate order total
-            order_item.table_order.calculate_total()
+                order.quantity = new_quantity
+                order.save()  # This will recalculate total_price
 
-            return Response({
-                'status': 'success',
-                'message': f'Updated {order_item.menu_item.name_en} quantity from {old_quantity} to {new_quantity}',
-                'order_item': {
-                    'id': order_item.id,
-                    'name': order_item.menu_item.name_en,
-                    'quantity': order_item.quantity,
-                    'price': float(order_item.price),
-                    'total': float(order_item.total_price)
-                },
-                'order_total': float(order_item.table_order.total_amount)
-            })
+                return Response({
+                    'status': 'success',
+                    'message': f'Updated {order.menu_item.name} quantity from {old_quantity} to {new_quantity}',
+                    'order': {
+                        'id': order.id,
+                        'name': order.menu_item.name,
+                        'quantity': order.quantity,
+                        'unit_price': float(order.unit_price),
+                        'total_price': float(order.total_price),
+                        'old_total': old_total
+                    }
+                })
 
-        except OrderItem.DoesNotExist:
-            return Response({
-                'error': 'Order item not found'
-            }, status=status.HTTP_404_NOT_FOUND)
         except ValueError:
             return Response({
                 'error': 'Invalid quantity value'
             }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'error': f'Failed to update quantity: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def calculate_bill_with_gst(self, request):
         """
         POST /api/bills/enhanced/calculate_bill_with_gst/
-        Calculate final bill with GST for a table
-        Body: {
-            "table_id": 1,
-            "apply_gst": true,
-            "gst_rate": 18,  // percentage
-            "interstate": false,  // true for IGST, false for CGST+SGST
-            "discount_percent": 0,
-            "discount_amount": 0
-        }
+        Calculate bill with GST breakdown for table
         """
         table_id = request.data.get('table_id')
-        apply_gst = request.data.get('apply_gst', False)
+        apply_gst = request.data.get('apply_gst', True)
         gst_rate = Decimal(str(request.data.get('gst_rate', 18)))
         interstate = request.data.get('interstate', False)
         discount_percent = Decimal(str(request.data.get('discount_percent', 0)))
@@ -322,27 +358,30 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            table = RestaurantTable.objects.get(id=table_id)
+            table = get_object_or_404(Table, id=table_id, is_active=True)
 
-            # Get all active orders for the table
-            active_orders = table.orders.filter(
-                status__in=['pending', 'in_progress', 'ready', 'completed'],
-                is_in_enhanced_billing=True
-            )
+            # Get all orders for this table that can be billed
+            billable_orders = Order.objects.filter(
+                table=table,
+                status__in=['confirmed', 'preparing', 'ready', 'served']
+            ).select_related('menu_item')
 
-            if not active_orders.exists():
+            if not billable_orders.exists():
                 return Response({
-                    'error': 'No active orders found for this table'
+                    'error': 'No billable orders found for this table'
                 }, status=status.HTTP_404_NOT_FOUND)
 
             # Calculate subtotal
-            subtotal = sum(order.total_amount for order in active_orders)
+            subtotal = sum(order.total_price for order in billable_orders)
 
             # Apply discount
+            calculated_discount = Decimal('0')
             if discount_percent > 0:
-                discount_amount = subtotal * (discount_percent / 100)
+                calculated_discount = (subtotal * discount_percent) / 100
+            if discount_amount > 0:
+                calculated_discount = max(calculated_discount, discount_amount)
 
-            discounted_subtotal = subtotal - discount_amount
+            taxable_amount = subtotal - calculated_discount
 
             # Calculate GST
             gst_amount = Decimal('0')
@@ -350,71 +389,88 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
             sgst_amount = Decimal('0')
             igst_amount = Decimal('0')
 
-            if apply_gst:
+            if apply_gst and gst_rate > 0:
                 gst_decimal = gst_rate / 100
-                gst_amount = discounted_subtotal * gst_decimal
+                gst_amount = (taxable_amount * gst_decimal).quantize(Decimal('0.01'))
 
                 if interstate:
                     igst_amount = gst_amount
                 else:
-                    cgst_amount = gst_amount / 2
-                    sgst_amount = gst_amount / 2
+                    cgst_amount = (gst_amount / 2).quantize(Decimal('0.01'))
+                    sgst_amount = (gst_amount / 2).quantize(Decimal('0.01'))
 
             # Calculate final total
-            total_amount = discounted_subtotal + gst_amount
+            total_amount = taxable_amount + gst_amount
 
-            # Prepare bill breakdown
+            # Prepare detailed bill breakdown (D-mart style)
             bill_breakdown = {
                 'table_number': table.table_number,
+                'table_location': table.location or '',
+                'order_count': billable_orders.count(),
+                'item_count': sum(order.quantity for order in billable_orders),
+
+                # Financial breakdown
                 'subtotal': float(subtotal),
                 'discount_percent': float(discount_percent),
-                'discount_amount': float(discount_amount),
-                'discounted_subtotal': float(discounted_subtotal),
+                'discount_amount': float(calculated_discount),
+                'taxable_amount': float(taxable_amount),
+
+                # GST details
                 'gst_applied': apply_gst,
                 'gst_rate': float(gst_rate),
                 'interstate': interstate,
+                'cgst_rate': float(gst_rate / 2) if not interstate else 0,
+                'sgst_rate': float(gst_rate / 2) if not interstate else 0,
+                'igst_rate': float(gst_rate) if interstate else 0,
                 'cgst_amount': float(cgst_amount),
                 'sgst_amount': float(sgst_amount),
                 'igst_amount': float(igst_amount),
                 'total_gst_amount': float(gst_amount),
+
+                # Final totals
                 'total_amount': float(total_amount),
-                'orders_count': active_orders.count(),
-                'calculation_time': timezone.now().isoformat()
+                'total_savings': float(calculated_discount),
+
+                # Metadata
+                'calculation_time': timezone.now().isoformat(),
+                'calculated_by': request.user.email,
+
+                # Item details for receipt
+                'items': [{
+                    'name': order.menu_item.name,
+                    'quantity': order.quantity,
+                    'unit_price': float(order.unit_price),
+                    'total_price': float(order.total_price),
+                    'category': order.menu_item.category.name if order.menu_item.category else 'Others'
+                } for order in billable_orders]
             }
 
             return Response({
                 'status': 'success',
-                'bill_breakdown': bill_breakdown
+                'bill_breakdown': bill_breakdown,
+                'ready_for_billing': True
             })
 
-        except RestaurantTable.DoesNotExist:
+        except Exception as e:
             return Response({
-                'error': 'Table not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+                'error': f'Failed to calculate bill: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'])
     def generate_final_bill(self, request):
         """
         POST /api/bills/enhanced/generate_final_bill/
-        Generate final bill and mark table as available
-        Body: {
-            "table_id": 1,
-            "customer_name": "John Doe",
-            "customer_phone": "9876543210",
-            "payment_method": "cash",
-            "apply_gst": true,
-            "gst_rate": 18,
-            "interstate": false,
-            "discount_amount": 0
-        }
+        Generate final D-mart style bill and FREE THE TABLE
+        Handle missing customer details by making them optional
         """
         table_id = request.data.get('table_id')
-        customer_name = request.data.get('customer_name', 'Guest')
-        customer_phone = request.data.get('customer_phone', '')
+        customer_name = request.data.get('customer_name', 'Guest').strip() or 'Guest'
+        customer_phone = request.data.get('customer_phone', '').strip() or 'N/A'
         payment_method = request.data.get('payment_method', 'cash')
-        apply_gst = request.data.get('apply_gst', False)
+        apply_gst = request.data.get('apply_gst', True)
         gst_rate = Decimal(str(request.data.get('gst_rate', 18)))
         interstate = request.data.get('interstate', False)
+        discount_percent = Decimal(str(request.data.get('discount_percent', 0)))
         discount_amount = Decimal(str(request.data.get('discount_amount', 0)))
 
         if not table_id:
@@ -424,31 +480,47 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
 
         try:
             with transaction.atomic():
-                table = RestaurantTable.objects.get(id=table_id)
+                table = get_object_or_404(Table, id=table_id, is_active=True)
 
-                # Get all active orders for the table
-                active_orders = table.orders.filter(
-                    status__in=['pending', 'in_progress', 'ready', 'completed'],
-                    is_in_enhanced_billing=True
-                )
+                # Get all billable orders
+                billable_orders = Order.objects.filter(
+                    table=table,
+                    status__in=['confirmed', 'preparing', 'ready', 'served']
+                ).select_related('menu_item', 'menu_item__category')
 
-                if not active_orders.exists():
+                if not billable_orders.exists():
                     return Response({
-                        'error': 'No active orders found for this table'
+                        'error': 'No billable orders found for this table'
                     }, status=status.HTTP_404_NOT_FOUND)
 
-                # Calculate totals
-                subtotal = sum(order.total_amount for order in active_orders)
-                discounted_subtotal = subtotal - discount_amount
+                # Calculate all amounts
+                subtotal = sum(order.total_price for order in billable_orders)
+
+                # Apply discount
+                calculated_discount = Decimal('0')
+                if discount_percent > 0:
+                    calculated_discount = (subtotal * discount_percent) / 100
+                if discount_amount > 0:
+                    calculated_discount = max(calculated_discount, discount_amount)
+
+                taxable_amount = subtotal - calculated_discount
 
                 # Calculate GST
                 gst_amount = Decimal('0')
-                if apply_gst:
-                    gst_amount = discounted_subtotal * (gst_rate / 100)
+                cgst_amount = Decimal('0')
+                sgst_amount = Decimal('0')
 
-                total_amount = discounted_subtotal + gst_amount
+                if apply_gst and gst_rate > 0:
+                    gst_decimal = gst_rate / 100
+                    gst_amount = (taxable_amount * gst_decimal).quantize(Decimal('0.01'))
 
-                # Create the final bill
+                    if not interstate:
+                        cgst_amount = (gst_amount / 2).quantize(Decimal('0.01'))
+                        sgst_amount = (gst_amount / 2).quantize(Decimal('0.01'))
+
+                total_amount = taxable_amount + gst_amount
+
+                # Create the bill record
                 bill = Bill.objects.create(
                     user=request.user,
                     bill_type='restaurant',
@@ -458,110 +530,134 @@ class EnhancedBillingViewSet(viewsets.ModelViewSet):
                     payment_method=payment_method
                 )
 
-                # Create bill items from all order items
-                for order in active_orders:
-                    for order_item in order.items.all():
-                        BillItem.objects.create(
-                            bill=bill,
-                            item_name=order_item.menu_item.name_en,
-                            quantity=order_item.quantity,
-                            price=order_item.price
-                        )
+                # Create bill items
+                for order in billable_orders:
+                    BillItem.objects.create(
+                        bill=bill,
+                        item_name=f"{order.menu_item.name} (Table {table.table_number})",
+                        quantity=order.quantity,
+                        price=order.unit_price
+                    )
 
-                # Mark all orders as billed
-                for order in active_orders:
-                    order.mark_billed()
+                # Generate D-mart style PDF receipt
+                pdf_path = self.generate_dmart_receipt(
+                    bill, table, billable_orders, subtotal, calculated_discount, 
+                    gst_amount, cgst_amount, sgst_amount, interstate, gst_rate
+                )
 
-                # Release the table (status: occupied -> available)
-                table.release_table()
+                # Update order statuses to served
+                billable_orders.update(status='served', served_at=timezone.now())
+
+                # Complete any active session
+                session = table.order_sessions.filter(is_active=True).first()
+                if session:
+                    session.complete_session()
+
+                # FREE THE TABLE - This is the key requirement!
+                table.mark_free()
+
+                # Try to broadcast table status update via WebSocket
+                try:
+                    from apps.restaurant.utils import broadcast_table_update
+                    broadcast_table_update(table, 'occupied')
+                except ImportError:
+                    pass  # WebSocket not available
 
                 return Response({
                     'status': 'success',
-                    'message': f'Bill generated successfully for Table {table.table_number}',
+                    'message': f'✅ D-mart Style Bill Generated & Table Freed!',
                     'bill': {
                         'bill_id': bill.id,
                         'receipt_number': bill.receipt_number,
                         'customer_name': bill.customer_name,
                         'customer_phone': bill.customer_phone,
+                        'table_number': table.table_number,
                         'subtotal': float(subtotal),
-                        'discount_amount': float(discount_amount),
+                        'discount_amount': float(calculated_discount),
+                        'taxable_amount': float(taxable_amount),
                         'gst_amount': float(gst_amount),
+                        'cgst_amount': float(cgst_amount),
+                        'sgst_amount': float(sgst_amount),
                         'total_amount': float(total_amount),
                         'payment_method': payment_method,
-                        'created_at': bill.created_at.isoformat()
+                        'gst_applied': apply_gst,
+                        'interstate': interstate,
+                        'gst_rate': float(gst_rate),
+                        'items_count': sum(order.quantity for order in billable_orders),
+                        'orders_count': billable_orders.count(),
+                        'created_at': bill.created_at.isoformat(),
+                        'pdf_path': pdf_path
                     },
                     'table': {
+                        'table_id': table.id,
                         'table_number': table.table_number,
-                        'status': table.status,  # Should be 'available' now
+                        'status': table.status,  # Should be 'free' now
+                        'previous_status': 'occupied',
+                        'freed_at': timezone.now().isoformat(),
                         'session_cleared': True
-                    }
+                    },
+                    'orders_processed': billable_orders.count(),
+                    'table_freed': True,
+                    'timestamp': timezone.now().isoformat()
                 })
 
-        except RestaurantTable.DoesNotExist:
-            return Response({
-                'error': 'Table not found'
-            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 'error': f'Failed to generate bill: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=False, methods=['get'])
-    def table_order_history(self, request):
-        """
-        GET /api/bills/enhanced/table_order_history/?table_id=1
-        Get order history for a specific table
-        """
-        table_id = request.query_params.get('table_id')
-
-        if not table_id:
-            return Response({
-                'error': 'table_id parameter is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
+    def generate_dmart_receipt(self, bill, table, orders, subtotal, discount, 
+                              gst_amount, cgst_amount, sgst_amount, interstate, gst_rate):
+        """Generate D-mart style professional receipt PDF"""
         try:
-            table = RestaurantTable.objects.get(id=table_id)
+            # Create bills directory structure
+            folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
+            os.makedirs(folder, exist_ok=True)
+            filename = f"{bill.receipt_number}.pdf"
+            pdf_path = os.path.join(folder, filename)
 
-            # Get recent orders (last 30 days)
-            from datetime import timedelta
-            thirty_days_ago = timezone.now() - timedelta(days=30)
+            # Prepare comprehensive context for D-mart style template
+            context = {
+                'bill': bill,
+                'table': table,
+                'items': bill.items.all(),
+                'orders': orders,
 
-            orders = table.orders.filter(
-                created_at__gte=thirty_days_ago
-            ).order_by('-created_at')
+                # Financial details
+                'subtotal': float(subtotal),
+                'discount_amount': float(discount),
+                'taxable_amount': float(subtotal - discount),
+                'gst_amount': float(gst_amount),
+                'cgst_amount': float(cgst_amount),
+                'sgst_amount': float(sgst_amount),
+                'interstate': interstate,
+                'gst_rate': float(gst_rate),
 
-            order_history = []
-            for order in orders:
-                order_items = []
-                for item in order.items.all():
-                    order_items.append({
-                        'name': item.menu_item.name_en,
-                        'quantity': item.quantity,
-                        'price': float(item.price),
-                        'total': float(item.total_price),
-                        'status': item.status
-                    })
+                # Additional details for professional receipt
+                'total_items': sum(order.quantity for order in orders),
+                'total_orders': orders.count(),
+                'current_date': timezone.now(),
+                'bill_time': bill.created_at,
 
-                order_history.append({
-                    'order_id': order.id,
-                    'order_number': order.order_number,
-                    'status': order.status,
-                    'customer_name': order.customer_name,
-                    'total_amount': float(order.total_amount),
-                    'created_at': order.created_at.isoformat(),
-                    'completed_at': order.completed_at.isoformat() if order.completed_at else None,
-                    'items': order_items
-                })
+                # Company details (can be configured in settings)
+                'company_name': getattr(settings, 'COMPANY_NAME', 'Hotel Restaurant'),
+                'company_address': getattr(settings, 'COMPANY_ADDRESS', 'Hotel Address, City, State'),
+                'company_phone': getattr(settings, 'COMPANY_PHONE', '+91-XXXXXXXXXX'),
+                'gstin': getattr(settings, 'COMPANY_GSTIN', 'GSTIN_NUMBER'),
+                'fssai': getattr(settings, 'COMPANY_FSSAI', 'FSSAI_NUMBER'),
 
-            return Response({
-                'status': 'success',
-                'table_number': table.table_number,
-                'order_history': order_history,
-                'total_orders': len(order_history)
-            })
+                # Receipt styling
+                'show_qr_code': True,
+                'show_tax_summary': gst_amount > 0,
+                'show_savings': discount > 0
+            }
 
-        except RestaurantTable.DoesNotExist:
-            return Response({
-                'error': 'Table not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+            # Render PDF using D-mart style template
+            render_to_pdf("bills/dmart_style_bill.html", context, pdf_path)
+
+            return pdf_path
+
+        except Exception as e:
+            print(f"Error generating D-mart receipt: {e}")
+            return None
 

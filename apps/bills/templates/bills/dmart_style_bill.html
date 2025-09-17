@@ -1,0 +1,307 @@
+<!-- apps/bills/templates/bills/dmart_style_bill.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D-mart Style Receipt - {{ bill.receipt_number }}</title>
+    <style>
+        body { 
+            font-family: 'Courier New', monospace; 
+            margin: 0; 
+            padding: 20px; 
+            background: white; 
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .receipt { 
+            max-width: 350px; 
+            margin: 0 auto; 
+            background: white; 
+            border: 2px dashed #333;
+            padding: 15px;
+        }
+        .header { 
+            text-align: center; 
+            border-bottom: 1px solid #333; 
+            padding-bottom: 10px; 
+            margin-bottom: 15px; 
+        }
+        .company-name { 
+            font-size: 18px; 
+            font-weight: bold; 
+            margin-bottom: 5px; 
+        }
+        .company-details { 
+            font-size: 10px; 
+            line-height: 1.2; 
+            color: #666;
+        }
+        .bill-info { 
+            margin: 15px 0; 
+            border-bottom: 1px solid #ddd; 
+            padding-bottom: 10px; 
+        }
+        .bill-info div { 
+            display: flex; 
+            justify-content: space-between; 
+            margin: 2px 0; 
+        }
+        .customer-info {
+            background: #f9f9f9;
+            padding: 8px;
+            border-radius: 3px;
+            margin: 10px 0;
+        }
+        .items-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin: 15px 0; 
+        }
+        .items-table th, .items-table td { 
+            padding: 5px 2px; 
+            text-align: left; 
+            border-bottom: 1px dotted #ccc; 
+            font-size: 11px;
+        }
+        .items-table th { 
+            font-weight: bold; 
+            background: #f0f0f0; 
+        }
+        .item-name { 
+            max-width: 120px; 
+            word-wrap: break-word; 
+        }
+        .amount { 
+            text-align: right !important; 
+        }
+        .tax-section { 
+            background: #f8f9fa; 
+            padding: 8px; 
+            margin: 10px 0; 
+            border-radius: 3px;
+            border-left: 4px solid #007bff;
+        }
+        .tax-section h4 { 
+            margin: 0 0 8px 0; 
+            font-size: 12px; 
+            color: #007bff;
+        }
+        .tax-row { 
+            display: flex; 
+            justify-content: space-between; 
+            margin: 3px 0; 
+            font-size: 11px;
+        }
+        .total-section { 
+            border-top: 2px solid #333; 
+            margin-top: 15px; 
+            padding-top: 10px; 
+        }
+        .total-row { 
+            display: flex; 
+            justify-content: space-between; 
+            margin: 5px 0; 
+            font-weight: bold; 
+        }
+        .grand-total { 
+            font-size: 16px; 
+            border-top: 1px solid #333; 
+            padding-top: 5px; 
+            margin-top: 8px;
+            background: #e8f5e8;
+            padding: 8px;
+            border-radius: 3px;
+        }
+        .savings { 
+            background: #d4edda; 
+            color: #155724; 
+            padding: 8px; 
+            text-align: center; 
+            border-radius: 3px; 
+            margin: 10px 0; 
+            border: 1px solid #c3e6cb;
+        }
+        .footer { 
+            text-align: center; 
+            margin-top: 20px; 
+            padding-top: 10px; 
+            border-top: 1px solid #ddd; 
+            font-size: 10px; 
+            color: #666;
+        }
+        .qr-placeholder { 
+            width: 60px; 
+            height: 60px; 
+            border: 1px solid #333; 
+            margin: 10px auto; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            font-size: 8px;
+        }
+        .thank-you { 
+            font-weight: bold; 
+            margin: 10px 0; 
+            text-align: center;
+        }
+        .regulatory-info {
+            font-size: 9px;
+            color: #888;
+            line-height: 1.2;
+            text-align: center;
+            margin: 8px 0;
+        }
+        @media print {
+            body { margin: 0; padding: 10px; }
+            .receipt { border: none; box-shadow: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="receipt">
+        <!-- Header -->
+        <div class="header">
+            <div class="company-name">
+                {{ company_name|default:"HOTEL RESTAURANT" }}
+            </div>
+            <div class="company-details">
+                {{ company_address|default:"Hotel Address, City, State - PIN" }}<br>
+                Phone: {{ company_phone|default:"+91-XXXXXXXXXX" }}<br>
+                {% if gstin %}GSTIN: {{ gstin }}<br>{% endif %}
+                {% if fssai %}FSSAI: {{ fssai }}<br>{% endif %}
+            </div>
+        </div>
+
+        <!-- Bill Information -->
+        <div class="bill-info">
+            <div><strong>Receipt No:</strong> <span>{{ bill.receipt_number }}</span></div>
+            <div><strong>Date & Time:</strong> <span>{{ bill_time|date:"d/m/Y H:i" }}</span></div>
+            <div><strong>Cashier:</strong> <span>{{ bill.user.email|default:"System" }}</span></div>
+            <div><strong>Payment:</strong> <span>{{ bill.payment_method|upper }}</span></div>
+            {% if table %}
+            <div><strong>Table:</strong> <span>{{ table.table_number }}</span></div>
+            {% endif %}
+        </div>
+
+        <!-- Customer Information -->
+        <div class="customer-info">
+            <strong>Customer Details:</strong><br>
+            Name: {{ bill.customer_name }}<br>
+            {% if bill.customer_phone and bill.customer_phone != "N/A" %}
+            Phone: {{ bill.customer_phone }}<br>
+            {% endif %}
+        </div>
+
+        <!-- Items Table -->
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th>Item</th>
+                    <th>Qty</th>
+                    <th>Rate</th>
+                    <th class="amount">Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr>
+                    <td class="item-name">{{ item.item_name }}</td>
+                    <td>{{ item.quantity }}</td>
+                    <td>₹{{ item.price }}</td>
+                    <td class="amount">₹{{ item.price|floatformat:2 }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="4" style="text-align: center; color: #999;">No items found</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- Bill Totals -->
+        <div class="total-section">
+            <div class="total-row">
+                <span>Sub Total ({{ total_items|default:items.count }} items):</span>
+                <span>₹{{ subtotal|floatformat:2 }}</span>
+            </div>
+
+            {% if discount_amount and discount_amount > 0 %}
+            <div class="total-row" style="color: #dc3545;">
+                <span>Discount:</span>
+                <span>-₹{{ discount_amount|floatformat:2 }}</span>
+            </div>
+            {% endif %}
+
+            {% if show_tax_summary and gst_amount and gst_amount > 0 %}
+            <div class="tax-section">
+                <h4>📋 TAX SUMMARY</h4>
+                <div class="tax-row">
+                    <span>Taxable Amount:</span>
+                    <span>₹{{ taxable_amount|floatformat:2 }}</span>
+                </div>
+                {% if interstate %}
+                <div class="tax-row">
+                    <span>IGST ({{ gst_rate }}%):</span>
+                    <span>₹{{ gst_amount|floatformat:2 }}</span>
+                </div>
+                {% else %}
+                <div class="tax-row">
+                    <span>CGST ({{ gst_rate|div:2 }}%):</span>
+                    <span>₹{{ cgst_amount|floatformat:2 }}</span>
+                </div>
+                <div class="tax-row">
+                    <span>SGST ({{ gst_rate|div:2 }}%):</span>
+                    <span>₹{{ sgst_amount|floatformat:2 }}</span>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <div class="grand-total">
+                <div class="total-row" style="font-size: 18px;">
+                    <span>GRAND TOTAL:</span>
+                    <span>₹{{ bill.total_amount|floatformat:2 }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Savings Display -->
+        {% if show_savings and discount_amount and discount_amount > 0 %}
+        <div class="savings">
+            <strong>🎉 YOU SAVED ₹{{ discount_amount|floatformat:2 }}! 🎉</strong><br>
+            <small>Thank you for choosing us!</small>
+        </div>
+        {% endif %}
+
+        <!-- QR Code Placeholder -->
+        {% if show_qr_code %}
+        <div class="qr-placeholder">
+            QR CODE
+        </div>
+        {% endif %}
+
+        <!-- Regulatory Information -->
+        {% if gstin or fssai %}
+        <div class="regulatory-info">
+            {% if gstin %}GSTIN: {{ gstin }}<br>{% endif %}
+            {% if fssai %}FSSAI LIC: {{ fssai }}<br>{% endif %}
+            This is a computer generated receipt
+        </div>
+        {% endif %}
+
+        <!-- Footer -->
+        <div class="footer">
+            <div class="thank-you">
+                🙏 THANK YOU FOR YOUR VISIT! 🙏<br>
+                PLEASE VISIT AGAIN!
+            </div>
+            <div style="margin-top: 10px; font-size: 9px;">
+                Generated on {{ current_date|date:"d/m/Y H:i:s" }}<br>
+                <strong>{{ company_name|default:"Hotel Restaurant" }}</strong><br>
+                D-mart Style Professional Receipt
+            </div>
+        </div>
+    </div>
+</body>
+</html>

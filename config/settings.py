@@ -124,6 +124,12 @@ TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
+COMPANY_NAME = "The Harivillas"
+COMPANY_ADDRESS = "jajamkhedi phata,infront of essar pump, manawar, madhya pradesh - 454446"
+COMPANY_PHONE = "+91-1234567892"
+COMPANY_GSTIN = "000000"
+COMPANY_FSSAI = "000000"
+
 # Static Files
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
