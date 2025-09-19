@@ -1,16 +1,17 @@
-# apps/restaurant/consumers.py - WebSocket Consumers for Real-time Updates
+# apps/restaurant/consumers.py - COMPLETE FIXED WebSocket Consumers 
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+from django.utils import timezone
 from .models import Order, Table, KitchenDisplaySettings
-from .serializers import OrderSerializer, TableSerializer
+from .serializers import OrderSerializer, TableSerializer, OrderKDSSerializer
 import logging
 
 logger = logging.getLogger(__name__)
 
 class KitchenDisplayConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for Kitchen Display System"""
+    """WebSocket consumer for Kitchen Display System - COMPLETE FIXED"""
 
     async def connect(self):
         """Handle WebSocket connection"""
@@ -25,12 +26,17 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
 
         await self.accept()
 
-        # Send initial data
+        # Increment KDS connections and send initial data
+        await self.increment_kds_connections()
         await self.send_initial_data()
+        
         logger.info(f"KDS WebSocket connected: {self.channel_name}")
 
     async def disconnect(self, close_code):
         """Handle WebSocket disconnection"""
+        # Decrement connections
+        await self.decrement_kds_connections()
+        
         # Leave room group
         await self.channel_layer.group_discard(
             self.room_group_name,
@@ -48,8 +54,8 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
                 await self.handle_order_status_update(text_data_json)
             elif message_type == 'request_refresh':
                 await self.send_initial_data()
-            elif message_type == 'toggle_audio':
-                await self.handle_audio_toggle(text_data_json)
+            elif message_type == 'heartbeat':
+                await self.handle_heartbeat()
             else:
                 logger.warning(f"Unknown message type: {message_type}")
 
@@ -57,6 +63,14 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
             logger.error(f"Invalid JSON received: {e}")
         except Exception as e:
             logger.error(f"Error handling WebSocket message: {e}")
+
+    async def handle_heartbeat(self):
+        """Handle heartbeat from client"""
+        await self.update_kds_heartbeat()
+        await self.send(text_data=json.dumps({
+            'type': 'heartbeat_ack',
+            'timestamp': timezone.now().isoformat()
+        }))
 
     async def handle_order_status_update(self, data):
         """Handle order status updates from kitchen staff"""
@@ -69,37 +83,22 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
 
         try:
             # Update order status
-            await self.update_order_status(order_id, new_status, user_id)
-
-            # Broadcast update to all KDS clients
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'order_status_updated',
-                    'order_id': order_id,
-                    'status': new_status,
-                    'timestamp': await self.get_current_timestamp()
-                }
-            )
+            success = await self.update_order_status(order_id, new_status, user_id)
+            
+            if success:
+                # Broadcast update to all KDS clients
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        'type': 'order_status_updated',
+                        'order_id': order_id,
+                        'status': new_status,
+                        'timestamp': timezone.now().isoformat()
+                    }
+                )
 
         except Exception as e:
             logger.error(f"Error updating order status: {e}")
-
-    async def handle_audio_toggle(self, data):
-        """Handle audio notification toggle"""
-        enabled = data.get('enabled', True)
-
-        # Update settings
-        await self.update_audio_settings(enabled)
-
-        # Broadcast to all KDS clients
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'audio_settings_updated',
-                'enabled': enabled
-            }
-        )
 
     async def send_initial_data(self):
         """Send initial data when client connects"""
@@ -113,7 +112,7 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
                 'orders': orders,
                 'tables': tables,
                 'settings': settings,
-                'timestamp': await self.get_current_timestamp()
+                'timestamp': timezone.now().isoformat()
             }))
 
         except Exception as e:
@@ -138,14 +137,6 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
             'timestamp': event['timestamp']
         }))
 
-    async def order_cancelled(self, event):
-        """Handle order cancellation notifications"""
-        await self.send(text_data=json.dumps({
-            'type': 'order_cancelled',
-            'order_id': event['order_id'],
-            'timestamp': event['timestamp']
-        }))
-
     async def table_status_updated(self, event):
         """Handle table status update notifications"""
         await self.send(text_data=json.dumps({
@@ -154,19 +145,10 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
             'timestamp': event['timestamp']
         }))
 
-    async def audio_settings_updated(self, event):
-        """Handle audio settings update notifications"""
-        await self.send(text_data=json.dumps({
-            'type': 'audio_updated',
-            'enabled': event['enabled']
-        }))
-
     # Database operations
     @database_sync_to_async
     def get_active_orders(self):
         """Get all active orders for KDS"""
-        from .serializers import OrderKDSSerializer
-
         orders = Order.objects.select_related(
             'table', 'menu_item', 'menu_item__category', 'created_by'
         ).filter(
@@ -210,8 +192,7 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
         """Update order status in database"""
         try:
             order = Order.objects.get(id=order_id)
-            old_status = order.status
-
+            
             if user_id:
                 from apps.users.models import CustomUser
                 user = CustomUser.objects.get(id=user_id)
@@ -225,30 +206,29 @@ class KitchenDisplayConsumer(AsyncWebsocketConsumer):
             return False
 
     @database_sync_to_async
-    def update_audio_settings(self, enabled):
-        """Update audio settings"""
-        try:
-            settings, created = KitchenDisplaySettings.objects.get_or_create(
-                name='default',
-                defaults={'audio_enabled': enabled}
-            )
-            if not created:
-                settings.audio_enabled = enabled
-                settings.save()
-            return True
-        except Exception as e:
-            logger.error(f"Error updating audio settings: {e}")
-            return False
+    def increment_kds_connections(self):
+        """Increment KDS connection count"""
+        from django.core.cache import cache
+        current_count = cache.get('kds_connection_count', 0)
+        cache.set('kds_connection_count', current_count + 1, timeout=None)
+        cache.set('kds_last_heartbeat', timezone.now().isoformat(), timeout=120)
 
     @database_sync_to_async
-    def get_current_timestamp(self):
-        """Get current timestamp"""
-        from django.utils import timezone
-        return timezone.now().isoformat()
+    def decrement_kds_connections(self):
+        """Decrement KDS connection count"""
+        from django.core.cache import cache
+        current_count = cache.get('kds_connection_count', 0)
+        new_count = max(0, current_count - 1)
+        cache.set('kds_connection_count', new_count, timeout=None)
 
+    @database_sync_to_async
+    def update_kds_heartbeat(self):
+        """Update KDS heartbeat timestamp"""
+        from django.core.cache import cache
+        cache.set('kds_last_heartbeat', timezone.now().isoformat(), timeout=120)
 
 class OrderingConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for mobile ordering interface"""
+    """WebSocket consumer for mobile ordering interface - COMPLETE FIXED"""
 
     async def connect(self):
         """Handle WebSocket connection"""
@@ -286,6 +266,11 @@ class OrderingConsumer(AsyncWebsocketConsumer):
                 await self.send_tables_update()
             elif message_type == 'request_menu':
                 await self.send_menu_update()
+            elif message_type == 'heartbeat':
+                await self.send(text_data=json.dumps({
+                    'type': 'heartbeat_ack',
+                    'timestamp': timezone.now().isoformat()
+                }))
             else:
                 logger.warning(f"Unknown ordering message type: {message_type}")
 
@@ -304,7 +289,7 @@ class OrderingConsumer(AsyncWebsocketConsumer):
                 'type': 'initial_ordering_data',
                 'tables': tables,
                 'menu': menu,
-                'timestamp': await self.get_current_timestamp()
+                'timestamp': timezone.now().isoformat()
             }))
 
         except Exception as e:
@@ -317,37 +302,17 @@ class OrderingConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({
                 'type': 'tables_update',
                 'tables': tables,
-                'timestamp': await self.get_current_timestamp()
+                'timestamp': timezone.now().isoformat()
             }))
         except Exception as e:
             logger.error(f"Error sending tables update: {e}")
 
-    async def send_menu_update(self):
-        """Send menu update"""
-        try:
-            menu = await self.get_menu_items()
-            await self.send(text_data=json.dumps({
-                'type': 'menu_update',
-                'menu': menu,
-                'timestamp': await self.get_current_timestamp()
-            }))
-        except Exception as e:
-            logger.error(f"Error sending menu update: {e}")
-
     # WebSocket event handlers
-    async def table_status_changed(self, event):
+    async def table_status_updated(self, event):
         """Handle table status changes"""
         await self.send(text_data=json.dumps({
             'type': 'table_status_changed',
             'table': event['table'],
-            'timestamp': event['timestamp']
-        }))
-
-    async def menu_item_updated(self, event):
-        """Handle menu item updates"""
-        await self.send(text_data=json.dumps({
-            'type': 'menu_item_updated',
-            'item': event['item'],
             'timestamp': event['timestamp']
         }))
 
@@ -385,15 +350,8 @@ class OrderingConsumer(AsyncWebsocketConsumer):
 
         return menu_data
 
-    @database_sync_to_async
-    def get_current_timestamp(self):
-        """Get current timestamp"""
-        from django.utils import timezone
-        return timezone.now().isoformat()
-
-
 class TableManagementConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for table management dashboard"""
+    """WebSocket consumer for table management dashboard - COMPLETE FIXED"""
 
     async def connect(self):
         """Handle WebSocket connection"""
@@ -429,8 +387,11 @@ class TableManagementConsumer(AsyncWebsocketConsumer):
 
             if message_type == 'request_refresh':
                 await self.send_table_status()
-            elif message_type == 'update_table_status':
-                await self.handle_table_status_update(text_data_json)
+            elif message_type == 'heartbeat':
+                await self.send(text_data=json.dumps({
+                    'type': 'heartbeat_ack',
+                    'timestamp': timezone.now().isoformat()
+                }))
             else:
                 logger.warning(f"Unknown table management message type: {message_type}")
 
@@ -438,31 +399,6 @@ class TableManagementConsumer(AsyncWebsocketConsumer):
             logger.error(f"Invalid JSON received: {e}")
         except Exception as e:
             logger.error(f"Error handling table management WebSocket message: {e}")
-
-    async def handle_table_status_update(self, data):
-        """Handle manual table status updates"""
-        table_id = data.get('table_id')
-        new_status = data.get('status')
-
-        if not all([table_id, new_status]):
-            return
-
-        try:
-            await self.update_table_status(table_id, new_status)
-
-            # Broadcast update to all clients
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'table_status_updated',
-                    'table_id': table_id,
-                    'status': new_status,
-                    'timestamp': await self.get_current_timestamp()
-                }
-            )
-
-        except Exception as e:
-            logger.error(f"Error updating table status: {e}")
 
     async def send_table_status(self):
         """Send current table status"""
@@ -472,7 +408,7 @@ class TableManagementConsumer(AsyncWebsocketConsumer):
             await self.send(text_data=json.dumps({
                 'type': 'table_status',
                 'tables': tables,
-                'timestamp': await self.get_current_timestamp()
+                'timestamp': timezone.now().isoformat()
             }))
 
         except Exception as e:
@@ -508,22 +444,3 @@ class TableManagementConsumer(AsyncWebsocketConsumer):
         ).order_by('table_number')
 
         return TableWithOrdersSerializer(tables, many=True).data
-
-    @database_sync_to_async
-    def update_table_status(self, table_id, new_status):
-        """Update table status"""
-        try:
-            table = Table.objects.get(id=table_id)
-            table.status = new_status
-            table.save()
-            return True
-        except Exception as e:
-            logger.error(f"Error updating table status: {e}")
-            return False
-
-    @database_sync_to_async
-    def get_current_timestamp(self):
-        """Get current timestamp"""
-        from django.utils import timezone
-        return timezone.now().isoformat()
-

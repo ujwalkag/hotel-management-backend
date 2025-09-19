@@ -1,4 +1,4 @@
-# apps/restaurant/models.py - Enhanced Kitchen Display System Models with Admin Functionality
+# apps/restaurant/models.py - COMPLETE Enhanced Kitchen Display System Models with ALL MISSING METHODS
 from django.db import models
 from apps.users.models import CustomUser
 from decimal import Decimal
@@ -17,7 +17,6 @@ class Table(models.Model):
         ('cleaning', 'Cleaning'),
         ('maintenance', 'Maintenance')
     ]
-
     table_number = models.CharField(max_length=10, unique=True)
     capacity = models.IntegerField(default=4)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='free')
@@ -25,12 +24,10 @@ class Table(models.Model):
     last_occupied_at = models.DateTimeField(null=True, blank=True)
     last_billed_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
-    
     # Enhanced fields for better management
     qr_code_url = models.URLField(blank=True, help_text='QR code for mobile ordering')
     notes = models.TextField(blank=True, help_text='Admin notes about the table')
     priority_level = models.IntegerField(default=1, help_text='1=Normal, 2=VIP, 3=Premium')
-    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
@@ -54,33 +51,43 @@ class Table(models.Model):
             self.save(update_fields=['status', 'last_occupied_at'])
 
     def mark_free(self):
-        """Mark table as free after billing is completed"""
+        """Mark table as free after billing is completed - FIXED"""
+        from django.utils import timezone
         self.status = 'free'
         self.last_billed_at = timezone.now()
         self.save(update_fields=['status', 'last_billed_at'])
+        
+        # Broadcast table update
+        try:
+            from .utils import broadcast_table_update
+            broadcast_table_update(self, 'occupied')
+        except Exception:
+            pass  # Don't fail if broadcasting fails
 
     def get_active_orders(self):
-        """Get all active orders for this table"""
-        return self.orders.filter(status__in=['pending', 'confirmed', 'preparing', 'ready'])
+        """Get all active orders for this table - FIXED"""
+        return self.orders.filter(
+            status__in=['pending', 'confirmed', 'preparing', 'ready']
+        )
 
     def get_total_bill_amount(self):
-        """Calculate total bill amount for active orders"""
-        active_orders = self.get_active_orders()
-        total = sum(order.total_price for order in active_orders)
-        return Decimal(str(total))
+        """Calculate total bill amount for active orders - ENHANCED"""
+        session_orders = self.get_session_orders()
+        total = sum(order.total_price for order in session_orders)
+        return Decimal(str(total)) if total else Decimal('0.00')
 
     def get_session_orders(self):
-        """Get orders from current active session"""
+        """Get orders from current active session - FIXED"""
         active_session = self.order_sessions.filter(is_active=True).first()
         if active_session:
-            return self.orders.filter(
-                created_at__gte=active_session.created_at,
-                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
-            )
-        return self.orders.none()
+            return active_session.get_session_orders()
+        # Fallback to all orders for this table that haven't been billed
+        return self.orders.filter(
+            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+        ).order_by('created_at')
 
     def get_occupancy_duration(self):
-        """Get current occupancy duration in minutes"""
+        """Get current occupancy duration in minutes - ENHANCED"""
         if self.status == 'occupied' and self.last_occupied_at:
             duration = timezone.now() - self.last_occupied_at
             return int(duration.total_seconds() / 60)
@@ -111,7 +118,6 @@ class MenuItem(models.Model):
         ('discontinued', 'Discontinued'),
         ('seasonal', 'Seasonal')
     ]
-
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     category = models.ForeignKey(MenuCategory, on_delete=models.CASCADE, related_name='items')
@@ -155,14 +161,12 @@ class Order(models.Model):
         ('served', 'Served'),
         ('cancelled', 'Cancelled')
     ]
-
     PRIORITY_CHOICES = [
         ('low', 'Low'),
         ('normal', 'Normal'),
         ('high', 'High'),
         ('urgent', 'Urgent')
     ]
-
     SOURCE_CHOICES = [
         ('dine_in', 'Dine In'),
         ('mobile', 'Mobile Order'),
@@ -217,21 +221,22 @@ class Order(models.Model):
         # Auto-generate order number
         if not self.order_number:
             self.order_number = f"ORD{timezone.now().strftime('%Y%m%d')}{Order.objects.count() + 1:04d}"
-
+        
         # Auto-calculate total price
-        self.unit_price = self.menu_item.price
-        self.total_price = self.unit_price * self.quantity
-
+        if self.menu_item_id:  # Make sure menu_item exists
+            self.unit_price = self.menu_item.price
+            self.total_price = self.unit_price * self.quantity
+        
         # Set estimated times
-        if not self.estimated_preparation_time:
+        if not self.estimated_preparation_time and self.menu_item_id:
             self.estimated_preparation_time = self.menu_item.preparation_time
-
+        
         if self.status == 'preparing' and not self.preparation_started_at:
             self.preparation_started_at = timezone.now()
             self.estimated_ready_time = timezone.now() + timezone.timedelta(
-                minutes=self.estimated_preparation_time
+                minutes=self.estimated_preparation_time or 15
             )
-
+        
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -258,27 +263,45 @@ class Order(models.Model):
         return (timezone.now() - self.created_at).total_seconds() / 60
 
     def update_status(self, new_status, user=None):
-        """Update order status with proper tracking"""
+        """Update order status with proper tracking - FIXED"""
+        from django.utils import timezone
+        
         old_status = self.status
         self.status = new_status
-
-        if new_status == 'confirmed' and user:
-            self.confirmed_by = user
+        
+        # Update timestamps and user tracking
+        if new_status == 'confirmed' and not self.confirmed_at:
             self.confirmed_at = timezone.now()
-        elif new_status == 'preparing' and user:
-            self.prepared_by = user
+            if user:
+                self.confirmed_by = user
+        
+        elif new_status == 'preparing' and not self.preparation_started_at:
             self.preparation_started_at = timezone.now()
-        elif new_status == 'ready':
+            if user:
+                self.prepared_by = user
+            # Set estimated ready time
+            if self.estimated_preparation_time:
+                self.estimated_ready_time = timezone.now() + timezone.timedelta(
+                    minutes=self.estimated_preparation_time
+                )
+        
+        elif new_status == 'ready' and not self.ready_at:
             self.ready_at = timezone.now()
-        elif new_status == 'served' and user:
-            self.served_by = user
+        
+        elif new_status == 'served' and not self.served_at:
             self.served_at = timezone.now()
-
+            if user:
+                self.served_by = user
+        
         self.save()
-
-        # Trigger real-time update
-        from .utils import broadcast_order_update
-        broadcast_order_update(self, old_status)
+        
+        # Broadcast status update
+        try:
+            from .utils import broadcast_order_update
+            broadcast_order_update(self, old_status)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error broadcasting order update: {e}")
 
 class OrderSession(models.Model):
     """Enhanced order sessions for comprehensive billing"""
@@ -287,9 +310,9 @@ class OrderSession(models.Model):
         ('paid', 'Paid'),
         ('partial', 'Partial'),
         ('cancelled', 'Cancelled'),
-        ('refunded', 'Refunded')
+        ('refunded', 'Refunded'),
+        ('completed', 'Completed')  # Added this status
     ]
-
     PAYMENT_METHOD_CHOICES = [
         ('cash', 'Cash'),
         ('card', 'Card'),
@@ -302,7 +325,7 @@ class OrderSession(models.Model):
     table = models.ForeignKey(Table, on_delete=models.CASCADE, related_name='order_sessions')
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     is_active = models.BooleanField(default=True)
-    
+
     # Financial details
     subtotal_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -310,18 +333,17 @@ class OrderSession(models.Model):
     tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     final_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    
+
     # Payment details
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, blank=True)
     payment_details = models.JSONField(default=dict, help_text='Payment breakdown for mixed payments')
-    
+
     # Admin and operational
     notes = models.TextField(blank=True)
     admin_notes = models.TextField(blank=True, help_text='Admin notes for billing')
     receipt_number = models.CharField(max_length=20, blank=True)
     printed_at = models.DateTimeField(null=True, blank=True)
-    
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     billed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='sessions_billed')
@@ -333,58 +355,65 @@ class OrderSession(models.Model):
     def __str__(self):
         return f"Session {self.receipt_number or self.session_id} - Table {self.table.table_number}"
 
-    def calculate_totals(self):
-        """Calculate session totals with enhanced pricing"""
-        orders = self.get_session_orders()
-        
-        self.subtotal_amount = sum(order.total_price for order in orders)
-        
-        # Apply percentage discount if set
-        if self.discount_percentage > 0:
-            self.discount_amount = self.subtotal_amount * (self.discount_percentage / 100)
-        
-        # Calculate tax (5% GST by default)
-        taxable_amount = self.subtotal_amount - self.discount_amount
-        self.tax_amount = taxable_amount * Decimal('0.05')
-        
-        # Service charge (optional)
-        if not self.service_charge:
-            self.service_charge = Decimal('0.00')
-        
-        self.final_amount = (
-            self.subtotal_amount 
-            - self.discount_amount 
-            + self.tax_amount 
-            + self.service_charge
-        )
-        
-        # Generate receipt number
-        if not self.receipt_number:
-            self.receipt_number = f"RCP{timezone.now().strftime('%Y%m%d')}{OrderSession.objects.count() + 1:04d}"
-        
-        self.save()
-
     def get_session_orders(self):
-        """Get all orders in this session"""
+        """Get all orders in this session - FIXED"""
         return self.table.orders.filter(
             created_at__gte=self.created_at,
-            status__in=['confirmed', 'preparing', 'ready', 'served']
-        )
+            created_at__lte=self.completed_at if self.completed_at else timezone.now()
+        ).order_by('created_at')
 
-    def complete_session(self, user=None):
-        """Complete the order session and free the table"""
+    def calculate_totals(self):
+        """Calculate session totals with GST - ENHANCED"""
+        from decimal import Decimal
+        
+        orders = self.get_session_orders()
+        subtotal = sum(order.total_price for order in orders)
+        
+        # Apply percentage discount first
+        if self.discount_percentage > 0:
+            percentage_discount = subtotal * (self.discount_percentage / 100)
+            self.discount_amount = max(self.discount_amount, percentage_discount)
+        
+        # Calculate taxable amount
+        taxable_amount = subtotal - self.discount_amount
+        
+        # Calculate GST (18% for restaurants in India)
+        gst_rate = Decimal('0.18')  # 18%
+        self.tax_amount = taxable_amount * gst_rate
+        
+        # Calculate final amount
+        self.subtotal_amount = subtotal
+        self.final_amount = taxable_amount + self.tax_amount + self.service_charge
+        
+        # Generate receipt number if not exists
+        if not self.receipt_number:
+            self.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        
+        self.save()
+        return self.final_amount
+
+    def complete_session(self, billed_by=None):
+        """Complete the billing session - FIXED"""
+        from django.utils import timezone
+        
+        if not self.receipt_number:
+            self.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8].upper()}"
+        
         self.is_active = False
         self.completed_at = timezone.now()
-        self.payment_status = 'paid'
-        if user:
-            self.billed_by = user
+        self.payment_status = 'completed'
+        
+        if billed_by:
+            self.billed_by = billed_by
+        
         self.save()
-
-        # Free the table
+        
+        # Mark table as free
         self.table.mark_free()
 
     def print_bill(self):
-        """Mark bill as printed"""
+        """Mark bill as printed - FIXED"""
+        from django.utils import timezone
         self.printed_at = timezone.now()
         self.save()
 
@@ -399,13 +428,12 @@ class KitchenDisplaySettings(models.Model):
     show_preparation_time = models.BooleanField(default=True)
     show_order_notes = models.BooleanField(default=True)
     max_orders_per_screen = models.PositiveIntegerField(default=20)
-    
+
     # Enhanced features
     offline_mode_enabled = models.BooleanField(default=True, help_text='Store orders when offline')
     notification_sound_volume = models.DecimalField(max_digits=3, decimal_places=2, default=0.8)
     auto_confirm_orders = models.BooleanField(default=False)
     group_orders_by_table = models.BooleanField(default=True)
-    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -423,7 +451,7 @@ class OfflineOrderBackup(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     is_processed = models.BooleanField(default=False)
-    
+
     class Meta:
         db_table = 'offline_order_backup'
         ordering = ['created_at']
@@ -431,23 +459,34 @@ class OfflineOrderBackup(models.Model):
 # Enhanced Signal handlers
 @receiver(post_save, sender=Order)
 def handle_order_created(sender, instance, created, **kwargs):
-    """Enhanced order creation handler"""
+    """Enhanced order creation handler with broadcasting - FIXED"""
     if created:
         # Mark table as occupied if it's the first order
         if instance.table.status == 'free':
             instance.table.mark_occupied()
         
-        # Create backup if KDS might be offline
+        # Broadcast order immediately after creation
         try:
-            from .utils import is_kds_connected, create_order_backup
+            from .utils import broadcast_order_update, is_kds_connected, create_order_backup
+            
+            # Always try to broadcast
+            broadcast_order_update(instance, None)
+            
+            # Create backup if KDS might be offline
             if not is_kds_connected():
                 create_order_backup(instance)
-        except Exception:
-            pass  # Fail silently to not break order creation
+                
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Error in order signal handler: {e}")
 
 @receiver(post_save, sender=OrderSession)
 def handle_session_completed(sender, instance, **kwargs):
     """Handle session completion with enhanced features"""
-    if not instance.is_active and instance.payment_status in ['paid', 'partial']:
+    if not instance.is_active and instance.payment_status in ['paid', 'partial', 'completed']:
         # Additional cleanup and notifications can be added here
-        pass
+        try:
+            from .utils import broadcast_table_update
+            broadcast_table_update(instance.table, 'occupied')
+        except Exception:
+            pass

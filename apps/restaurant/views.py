@@ -1,4 +1,4 @@
-# apps/restaurant/views.py - Complete Enhanced Views with All ViewSets
+# apps/restaurant/views.py - COMPLETE Enhanced Views with ALL Functionality + Your Updates
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -22,16 +22,31 @@ from .serializers import (
     MenuItemSerializer, MenuItemCreateSerializer, OrderSerializer,
     OrderCreateSerializer, OrderKDSSerializer, OrderStatusUpdateSerializer,
     BulkOrderCreateSerializer, OrderSessionSerializer, OrderSessionCreateSerializer,
-    KitchenDisplaySettingsSerializer, OrderAnalyticsSerializer, 
-    TableAnalyticsSerializer, AdminBillSerializer
+    KitchenDisplaySettingsSerializer
 )
 from .utils import (
     broadcast_order_update, broadcast_table_update, is_kds_connected,
     create_order_backup, process_offline_orders, generate_receipt_data,
-    get_system_health, validate_table_operations, get_order_status_history
+    get_system_health, validate_table_operations, get_order_status_history,
+    generate_complete_bill, calculate_gst_breakdown, increment_kds_connections,
+    decrement_kds_connections, update_kds_heartbeat
 )
+from rest_framework.exceptions import PermissionDenied
 
 logger = logging.getLogger(__name__)
+
+# Role-based permission decorator
+def role_required(allowed_roles):
+    """Custom decorator for role-based access control"""
+    def decorator(view_func):
+        def wrapper(self, request, *args, **kwargs):
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                user_role = getattr(request.user, 'role', None)
+                if user_role not in allowed_roles:
+                    raise PermissionDenied(f'Access denied. Required roles: {allowed_roles}')
+            return view_func(self, request, *args, **kwargs)
+        return wrapper
+    return decorator
 
 class MenuCategoryViewSet(viewsets.ModelViewSet):
     """ViewSet for menu categories"""
@@ -60,11 +75,11 @@ class MenuItemViewSet(viewsets.ModelViewSet):
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category_id=category)
-            
+        
         availability = self.request.query_params.get('availability')
         if availability:
             queryset = queryset.filter(availability=availability)
-            
+        
         return queryset.order_by('category__display_order', 'display_order', 'name')
 
     def get_serializer_class(self):
@@ -179,7 +194,7 @@ class TableViewSet(viewsets.ModelViewSet):
             table.last_occupied_at = timezone.now()
         elif new_status == 'free':
             table.last_billed_at = timezone.now()
-            
+        
         table.save()
 
         # Broadcast update
@@ -218,47 +233,58 @@ class TableViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def complete_billing(self, request, pk=None):
-        """Complete billing with enhanced admin features"""
+        """Complete billing with enhanced admin features - FIXED"""
         table = self.get_object()
 
-        # Get active session
+        # Get or create active session
         session = table.order_sessions.filter(is_active=True).first()
         if not session:
-            return Response(
-                {'error': 'No active session found'},
-                status=status.HTTP_400_BAD_REQUEST
+            # Create new session with all orders for this table
+            session = OrderSession.objects.create(
+                table=table,
+                created_by=request.user
             )
 
-        # Apply discounts and adjustments
-        discount_amount = request.data.get('discount_amount', session.discount_amount)
-        discount_percentage = request.data.get('discount_percentage', session.discount_percentage)
-        service_charge = request.data.get('service_charge', session.service_charge)
-        payment_method = request.data.get('payment_method', session.payment_method)
-        notes = request.data.get('notes', session.notes)
-        admin_notes = request.data.get('admin_notes', session.admin_notes)
+        try:
+            # Apply billing parameters from request
+            customer_name = request.data.get('customer_name', 'Guest')
+            customer_phone = request.data.get('customer_phone', '')
+            payment_method = request.data.get('payment_method', 'cash')
+            discount_amount = request.data.get('discount_amount', 0)
+            discount_percentage = request.data.get('discount_percentage', 0)
+            service_charge = request.data.get('service_charge', 0)
+            notes = request.data.get('notes', '')
+            admin_notes = request.data.get('admin_notes', '')
 
-        # Update session
-        session.discount_amount = Decimal(str(discount_amount))
-        session.discount_percentage = Decimal(str(discount_percentage))
-        session.service_charge = Decimal(str(service_charge))
-        session.payment_method = payment_method
-        session.notes = notes
-        session.admin_notes = admin_notes
-        
-        # Recalculate totals
-        session.calculate_totals()
-        session.complete_session(request.user)
+            # Update session with billing details
+            session.discount_amount = Decimal(str(discount_amount))
+            session.discount_percentage = Decimal(str(discount_percentage))
+            session.service_charge = Decimal(str(service_charge))
+            session.payment_method = payment_method
+            session.notes = notes
+            session.admin_notes = admin_notes
+            
+            # Calculate totals and complete session
+            final_amount = session.calculate_totals()
+            session.complete_session(request.user)
 
-        # Broadcast table status update
-        broadcast_table_update(table, 'occupied')
+            # Broadcast table status update
+            broadcast_table_update(table, 'occupied')
 
-        return Response({
-            'message': 'Billing completed successfully',
-            'receipt_number': session.receipt_number,
-            'final_amount': float(session.final_amount),
-            'table_status': table.status,
-            'session_data': OrderSessionSerializer(session).data
-        })
+            return Response({
+                'message': 'Billing completed successfully',
+                'receipt_number': session.receipt_number,
+                'final_amount': float(final_amount),
+                'table_status': table.status,
+                'session_data': OrderSessionSerializer(session).data
+            })
+            
+        except Exception as e:
+            logger.error(f"Error completing billing for table {table.table_number}: {e}")
+            return Response(
+                {'error': f'Failed to complete billing: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     @action(detail=True, methods=['post'])
     def print_bill(self, request, pk=None):
@@ -269,7 +295,7 @@ class TableViewSet(viewsets.ModelViewSet):
         if not session:
             # Try to get the most recent completed session
             session = table.order_sessions.filter(is_active=False).first()
-            
+        
         if not session:
             return Response(
                 {'error': 'No billing session found'},
@@ -331,12 +357,25 @@ class OrderViewSet(viewsets.ModelViewSet):
         return OrderSerializer
 
     def perform_create(self, serializer):
-        """Enhanced order creation with offline backup"""
-        order = serializer.save(created_by=self.request.user)
+        """Enhanced order creation with proper broadcasting - FIXED"""
+        # Set source as mobile for waiter orders
+        source = 'mobile' if getattr(self.request.user, 'role', None) == 'waiter' else 'dine_in'
+        order = serializer.save(created_by=self.request.user, source=source)
         
-        # Check if KDS is connected, create backup if not
-        if not is_kds_connected():
-            create_order_backup(order)
+        # CRITICAL: Always broadcast order update after creation
+        try:
+            # Broadcast to all connected clients immediately
+            broadcast_order_update(order, None)
+            
+            # Also create backup if KDS is offline
+            if not is_kds_connected():
+                create_order_backup(order)
+            
+            logger.info(f"Order {order.order_number} created and broadcasted successfully")
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting order {order.order_number}: {e}")
+            # Don't fail the order creation, just log the error
 
     @action(detail=False, methods=['get'])
     def kds_view(self, request):
@@ -371,26 +410,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=True, methods=['post'], url_path='orders/bulk-create')
-    def bulk_create_for_table(self, request, pk=None):
-        """
-        Bulk-create orders for a specific table (pk).
-        Expects only `orders` in request.data.
-        """
-        table = Table.objects.get(pk=pk)
-        data = {
-            'table': table.id,
-            'orders': request.data.get('orders', [])
-                 }
-        serializer = BulkOrderCreateSerializer(data=data, context={'request': request})
-        if not serializer.is_valid():
-            return Response({'error': serializer.errors}, status=400)
-        orders = serializer.save()
-        return Response(OrderSerializer(orders, many=True, context={'request': request}).data, status=201)
-
     @action(detail=False, methods=['post'])
     def bulk_create(self, request):
-        """Create multiple orders with enhanced features"""
+        """Create multiple orders with enhanced broadcasting - FIXED"""
         serializer = BulkOrderCreateSerializer(
             data=request.data,
             context={'request': request}
@@ -399,39 +421,95 @@ class OrderViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             orders = serializer.save()
 
-            # Handle offline backup for bulk orders
+            # CRITICAL: Broadcast each order individually
+            broadcast_success = 0
             kds_connected = is_kds_connected()
             
             for order in orders:
-                if kds_connected:
+                try:
+                    # Always try to broadcast
                     broadcast_order_update(order, None)
-                else:
-                    create_order_backup(order)
+                    broadcast_success += 1
+                    
+                    # Create backup if KDS offline
+                    if not kds_connected:
+                        create_order_backup(order)
+                        
+                except Exception as e:
+                    logger.error(f"Error broadcasting order {order.order_number}: {e}")
+
+            logger.info(f"Bulk order created: {len(orders)} orders, {broadcast_success} broadcasted")
 
             response_serializer = OrderSerializer(orders, many=True, context={'request': request})
             return Response({
                 'message': f'{len(orders)} orders created successfully',
                 'orders': response_serializer.data,
-                'kds_status': 'connected' if kds_connected else 'offline'
+                'kds_status': 'connected' if kds_connected else 'offline',
+                'broadcast_success': broadcast_success
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=False, methods=['post'])
-    def process_offline_orders(self, request):
-        """Process orders that were created when KDS was offline"""
-        try:
-            processed_count = process_offline_orders()
-            return Response({
-                'message': f'Processed {processed_count} offline orders',
-                'processed_count': processed_count
-            })
-        except Exception as e:
-            logger.error(f"Error processing offline orders: {e}")
+    @action(detail=True, methods=['post'])
+    def modify_order(self, request, pk=None):
+        """Admin functionality to modify existing orders"""
+        order = self.get_object()
+        
+        # Only allow modification of certain statuses
+        if order.status in ['served', 'cancelled']:
             return Response(
-                {'error': 'Failed to process offline orders'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': 'Cannot modify served or cancelled orders'},
+                status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Update order details
+        new_quantity = request.data.get('quantity')
+        new_instructions = request.data.get('special_instructions')
+        new_priority = request.data.get('priority')
+        
+        if new_quantity and new_quantity > 0:
+            order.quantity = new_quantity
+            order.total_price = order.unit_price * new_quantity
+        
+        if new_instructions is not None:
+            order.special_instructions = new_instructions
+            
+        if new_priority and new_priority in dict(Order.PRIORITY_CHOICES):
+            order.priority = new_priority
+        
+        order.admin_notes = f"Modified by {request.user.get_full_name()} at {timezone.now()}"
+        order.save()
+        
+        # Broadcast update
+        broadcast_order_update(order, None)
+        
+        return Response({
+            'message': 'Order modified successfully',
+            'order': OrderSerializer(order, context={'request': request}).data
+        })
+
+    @action(detail=True, methods=['delete'])
+    def cancel_order(self, request, pk=None):
+        """Admin functionality to cancel orders"""
+        order = self.get_object()
+        
+        if order.status == 'served':
+            return Response(
+                {'error': 'Cannot cancel served orders'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        old_status = order.status
+        order.status = 'cancelled'
+        order.admin_notes = f"Cancelled by {request.user.get_full_name()} at {timezone.now()}"
+        order.save()
+        
+        # Broadcast cancellation
+        broadcast_order_update(order, old_status)
+        
+        return Response({
+            'message': 'Order cancelled successfully'
+        })
 
 class OrderSessionViewSet(viewsets.ModelViewSet):
     """ViewSet for order sessions"""
@@ -446,12 +524,12 @@ class OrderSessionViewSet(viewsets.ModelViewSet):
         is_active = self.request.query_params.get('is_active')
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == 'true')
-            
+        
         # Filter by table
         table = self.request.query_params.get('table')
         if table:
             queryset = queryset.filter(table_id=table)
-            
+        
         return queryset.order_by('-created_at')
 
     def get_serializer_class(self):
@@ -468,172 +546,218 @@ class KitchenDisplaySettingsViewSet(viewsets.ModelViewSet):
     serializer_class = KitchenDisplaySettingsSerializer
     permission_classes = [IsAuthenticated]
 
-# New Admin Billing ViewSet
-class AdminBillingViewSet(viewsets.ViewSet):
-    """Admin billing functionality"""
+# Enhanced Billing ViewSet for frontend compatibility
+class EnhancedBillingViewSet(viewsets.ViewSet):
+    """Enhanced billing functionality for frontend compatibility"""
     permission_classes = [IsAuthenticated]
     
     def get_permissions(self):
-        """Only admin and managers can access admin billing"""
+        """Only admin, staff and managers can access billing"""
         if hasattr(self.request, 'user') and self.request.user.is_authenticated:
-            if self.request.user.role not in ['admin', 'manager']:
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied('Access denied: Admin or Manager role required')
+            if self.request.user.role not in ['admin', 'manager', 'staff']:
+                raise PermissionDenied('Access denied: Admin, Manager or Staff role required')
         return super().get_permissions()
 
     @action(detail=False, methods=['get'])
-    def active_sessions(self, request):
-        """Get all active billing sessions"""
-        sessions = OrderSession.objects.filter(is_active=True).select_related(
-            'table', 'created_by'
-        ).prefetch_related('table__orders')
-        
-        session_data = []
-        for session in sessions:
-            orders = session.get_session_orders()
-            session_info = OrderSessionSerializer(session).data
-            session_info['orders'] = OrderSerializer(orders, many=True, context={'request': request}).data
-            session_info['order_count'] = orders.count()
-            session_data.append(session_info)
-        
-        return Response(session_data)
-
-    @action(detail=False, methods=['post'])
-    def modify_bill(self, request):
-        """Admin functionality to modify existing bills"""
-        session_id = request.data.get('session_id')
-        modifications = request.data.get('modifications', {})
-        
+    def active_tables_dashboard(self, request):
+        """Get active tables for billing dashboard"""
         try:
-            if session_id:
-                session = OrderSession.objects.get(session_id=session_id)
-            else:
-                return Response(
-                    {'error': 'Session ID required'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Apply modifications
-            if 'discount_amount' in modifications:
-                session.discount_amount = Decimal(str(modifications['discount_amount']))
+            # Get tables with active orders or occupied status
+            tables = Table.objects.filter(
+                Q(status='occupied') | Q(orders__status__in=['pending', 'confirmed', 'preparing', 'ready', 'served'])
+            ).distinct().select_related().prefetch_related('orders__menu_item')
             
-            if 'discount_percentage' in modifications:
-                session.discount_percentage = Decimal(str(modifications['discount_percentage']))
+            active_tables_data = []
+            for table in tables:
+                # Get active orders
+                active_orders = table.get_active_orders()
+                session_orders = table.get_session_orders()
                 
-            if 'service_charge' in modifications:
-                session.service_charge = Decimal(str(modifications['service_charge']))
+                # Calculate subtotal
+                subtotal = sum(order.total_price for order in session_orders)
                 
-            if 'admin_notes' in modifications:
-                session.admin_notes = modifications['admin_notes']
-
-            # Recalculate totals
-            session.calculate_totals()
+                table_data = {
+                    'table_id': table.id,
+                    'table_number': table.table_number,
+                    'table_capacity': table.capacity,
+                    'table_location': table.location,
+                    'status': table.status,
+                    'orders_count': active_orders.count(),
+                    'subtotal': float(subtotal),
+                    'last_order_time': active_orders.first().created_at if active_orders.exists() else None,
+                    'customer_name': 'Guest',  # Default, can be enhanced
+                    'customer_phone': '',
+                    'orders': [
+                        {
+                            'order_number': order.order_number,
+                            'status': order.status,
+                            'items': [
+                                {
+                                    'id': order.id,
+                                    'name': order.menu_item.name,
+                                    'quantity': order.quantity,
+                                    'total': float(order.total_price),
+                                    'special_instructions': order.special_instructions
+                                }
+                            ]
+                        }
+                        for order in session_orders
+                    ]
+                }
+                active_tables_data.append(table_data)
             
             return Response({
-                'message': 'Bill modified successfully',
-                'session': OrderSessionSerializer(session).data
+                'active_tables': active_tables_data,
+                'total_count': len(active_tables_data)
             })
-
-        except OrderSession.DoesNotExist:
-            return Response(
-                {'error': 'Session not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            
         except Exception as e:
-            logger.error(f"Error modifying bill: {e}")
+            logger.error(f"Error in active_tables_dashboard: {e}")
             return Response(
-                {'error': 'Failed to modify bill'},
+                {'error': 'Failed to fetch active tables'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
     @action(detail=False, methods=['post'])
-    def void_bill(self, request):
-        """Admin functionality to void bills"""
-        session_id = request.data.get('session_id')
-        reason = request.data.get('reason', '')
-        
+    def calculate_bill_with_gst(self, request):
+        """Calculate bill with GST"""
         try:
-            session = OrderSession.objects.get(session_id=session_id)
+            table_id = request.data.get('table_id')
+            apply_gst = request.data.get('apply_gst', True)
+            gst_rate = request.data.get('gst_rate', 18) / 100  # Convert percentage
+            interstate = request.data.get('interstate', False)
+            discount_percent = request.data.get('discount_percent', 0)
+            discount_amount = request.data.get('discount_amount', 0)
             
-            # Mark as cancelled
-            session.payment_status = 'cancelled'
-            session.admin_notes = f"VOIDED by {request.user.get_full_name()}: {reason}"
-            session.is_active = False
-            session.completed_at = timezone.now()
-            session.save()
+            table = Table.objects.get(id=table_id)
             
-            # Free the table
-            session.table.mark_free()
+            # Get session orders
+            session_orders = table.get_session_orders()
+            subtotal = sum(order.total_price for order in session_orders)
+            
+            # Apply discount
+            if discount_percent > 0:
+                discount_amount = subtotal * (discount_percent / 100)
+            
+            taxable_amount = subtotal - Decimal(str(discount_amount))
+            
+            # Calculate GST
+            gst_breakdown = {
+                'total_gst_amount': 0,
+                'cgst_amount': 0,
+                'sgst_amount': 0,
+                'igst_amount': 0,
+                'cgst_rate': 0,
+                'sgst_rate': 0,
+                'gst_rate': gst_rate * 100
+            }
+            
+            if apply_gst:
+                gst_calculation = calculate_gst_breakdown(taxable_amount, gst_rate, interstate)
+                if interstate:
+                    gst_breakdown.update({
+                        'total_gst_amount': gst_calculation['total_gst'],
+                        'igst_amount': gst_calculation['igst'],
+                        'gst_rate': gst_calculation['gst_rate']
+                    })
+                else:
+                    gst_breakdown.update({
+                        'total_gst_amount': gst_calculation['total_gst'],
+                        'cgst_amount': gst_calculation['cgst'],
+                        'sgst_amount': gst_calculation['sgst'],
+                        'cgst_rate': gst_calculation['gst_rate'] / 2,
+                        'sgst_rate': gst_calculation['gst_rate'] / 2,
+                        'gst_rate': gst_calculation['gst_rate']
+                    })
+            
+            total_amount = taxable_amount + Decimal(str(gst_breakdown['total_gst_amount']))
+            
+            bill_breakdown = {
+                'table_number': table.table_number,
+                'item_count': session_orders.count(),
+                'subtotal': float(subtotal),
+                'discount_amount': float(discount_amount),
+                'taxable_amount': float(taxable_amount),
+                'gst_applied': apply_gst,
+                'interstate': interstate,
+                'total_amount': float(total_amount),
+                'total_savings': float(discount_amount),
+                **gst_breakdown
+            }
             
             return Response({
-                'message': 'Bill voided successfully',
-                'receipt_number': session.receipt_number
+                'bill_breakdown': bill_breakdown
             })
             
-        except OrderSession.DoesNotExist:
+        except Exception as e:
+            logger.error(f"Error calculating bill: {e}")
             return Response(
-                {'error': 'Session not found'},
-                status=status.HTTP_404_NOT_FOUND
+                {'error': 'Failed to calculate bill'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-    @action(detail=False, methods=['get'])
-    def billing_reports(self, request):
-        """Generate billing reports for admin"""
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
+    @action(detail=False, methods=['post'])
+    def generate_final_bill(self, request):
+        """Generate final bill and free table"""
+        try:
+            table_id = request.data.get('table_id')
+            customer_name = request.data.get('customer_name', 'Guest')
+            customer_phone = request.data.get('customer_phone', '')
+            payment_method = request.data.get('payment_method', 'cash')
             
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        sessions = OrderSession.objects.filter(
-            created_at__range=[date_from, date_to],
-            is_active=False
-        )
-
-        # Calculate totals
-        totals = sessions.aggregate(
-            total_revenue=Sum('final_amount'),
-            total_discount=Sum('discount_amount'),
-            total_tax=Sum('tax_amount'),
-            session_count=Count('id')
-        )
-
-        # Payment method breakdown
-        payment_breakdown = sessions.values('payment_method').annotate(
-            count=Count('id'),
-            amount=Sum('final_amount')
-        )
-
-        # Daily breakdown
-        daily_breakdown = sessions.extra({
-            'date': "DATE(created_at)"
-        }).values('date').annotate(
-            session_count=Count('id'),
-            revenue=Sum('final_amount')
-        ).order_by('date')
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'summary': {
-                'total_sessions': totals['session_count'] or 0,
-                'total_revenue': float(totals['total_revenue'] or 0),
-                'total_discount': float(totals['total_discount'] or 0),
-                'total_tax': float(totals['total_tax'] or 0),
-                'average_bill': float(totals['total_revenue'] or 0) / max(totals['session_count'] or 1, 1)
-            },
-            'payment_breakdown': list(payment_breakdown),
-            'daily_breakdown': list(daily_breakdown)
-        })
+            table = Table.objects.get(id=table_id)
+            
+            # Get or create session
+            session = table.order_sessions.filter(is_active=True).first()
+            if not session:
+                session = OrderSession.objects.create(
+                    table=table,
+                    created_by=request.user
+                )
+            
+            # Apply GST settings from request
+            apply_gst = request.data.get('apply_gst', True)
+            gst_rate = request.data.get('gst_rate', 18) / 100
+            discount_percent = request.data.get('discount_percent', 0)
+            discount_amount = request.data.get('discount_amount', 0)
+            
+            # Update session with billing details
+            session.discount_percentage = Decimal(str(discount_percent))
+            session.discount_amount = Decimal(str(discount_amount))
+            session.payment_method = payment_method
+            
+            # Generate complete bill
+            receipt_data = generate_complete_bill(
+                session,
+                payment_method=payment_method,
+                customer_name=customer_name,
+                customer_phone=customer_phone
+            )
+            
+            # Free the table
+            table.mark_free()
+            
+            return Response({
+                'message': 'Bill generated successfully',
+                'bill': {
+                    'receipt_number': session.receipt_number,
+                    'customer_name': customer_name,
+                    'total_amount': float(session.final_amount)
+                },
+                'table': {
+                    'table_number': table.table_number,
+                    'status': table.status
+                },
+                'table_freed': True,
+                'receipt_data': receipt_data
+            })
+            
+        except Exception as e:
+            logger.error(f"Error generating final bill: {e}")
+            return Response(
+                {'error': 'Failed to generate bill'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 # Enhanced API endpoints
 @api_view(['GET'])
@@ -777,63 +901,7 @@ def quick_order(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def table_orders(request, table_id):
-    """Get all orders for a specific table"""
-    try:
-        table = Table.objects.get(id=table_id, is_active=True)
-        orders = table.orders.all().order_by('-created_at')
-        
-        # Filter by status if provided
-        status_filter = request.query_params.get('status')
-        if status_filter:
-            orders = orders.filter(status=status_filter)
-        
-        serializer = OrderSerializer(orders, many=True, context={'request': request})
-        return Response({
-            'table': TableSerializer(table).data,
-            'orders': serializer.data,
-            'total_orders': orders.count()
-        })
-        
-    except Table.DoesNotExist:
-        return Response(
-            {'error': 'Table not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-@api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
-def table_session(request, table_id):
-    """Get or create table session"""
-    try:
-        table = Table.objects.get(id=table_id, is_active=True)
-        
-        if request.method == 'GET':
-            session = table.order_sessions.filter(is_active=True).first()
-            if session:
-                return Response(OrderSessionSerializer(session).data)
-            else:
-                return Response({'message': 'No active session'})
-        
-        elif request.method == 'POST':
-            # Create new session
-            session = OrderSession.objects.create(
-                table=table,
-                created_by=request.user
-            )
-            return Response(
-                OrderSessionSerializer(session).data,
-                status=status.HTTP_201_CREATED
-            )
-            
-    except Table.DoesNotExist:
-        return Response(
-            {'error': 'Table not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
+# KDS Connection management endpoints
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def kds_connection_status(request):
@@ -850,49 +918,25 @@ def kds_connection_status(request):
 @permission_classes([IsAuthenticated])
 def kds_heartbeat(request):
     """Update KDS heartbeat"""
-    from .utils import update_kds_heartbeat
     update_kds_heartbeat()
+    increment_kds_connections()  # Track active connections
     return Response({'message': 'Heartbeat updated'})
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def generate_receipt(request, session_id):
-    """Generate receipt data"""
-    try:
-        session = OrderSession.objects.get(session_id=session_id)
-        receipt_data = generate_receipt_data(session)
-        
-        if receipt_data:
-            return Response(receipt_data)
-        else:
-            return Response(
-                {'error': 'Failed to generate receipt'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-            
-    except OrderSession.DoesNotExist:
-        return Response(
-            {'error': 'Session not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def print_receipt(request, session_id):
-    """Mark receipt as printed"""
+def process_offline_orders_endpoint(request):
+    """Process orders that were created when KDS was offline"""
     try:
-        session = OrderSession.objects.get(session_id=session_id)
-        session.print_bill()
-        
+        processed_count = process_offline_orders()
         return Response({
-            'message': 'Receipt marked as printed',
-            'printed_at': session.printed_at
+            'message': f'Processed {processed_count} offline orders',
+            'processed_count': processed_count
         })
-        
-    except OrderSession.DoesNotExist:
+    except Exception as e:
+        logger.error(f"Error processing offline orders: {e}")
         return Response(
-            {'error': 'Session not found'},
-            status=status.HTTP_404_NOT_FOUND
+            {'error': 'Failed to process offline orders'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 # Export functions
@@ -927,676 +971,3 @@ def export_orders_csv(request):
         ])
     
     return response
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def export_sessions_csv(request):
-    """Export sessions to CSV"""
-    response = HttpResponse(content_type='text/csv')
-    response['Content-Disposition'] = 'attachment; filename="sessions.csv"'
-    
-    writer = csv.writer(response)
-    writer.writerow([
-        'Receipt Number', 'Table', 'Subtotal', 'Discount', 'Tax', 
-        'Service Charge', 'Final Amount', 'Payment Method', 
-        'Created At', 'Completed At', 'Created By'
-    ])
-    
-    sessions = OrderSession.objects.select_related(
-        'table', 'created_by'
-    ).order_by('-created_at')
-    
-    for session in sessions:
-        writer.writerow([
-            session.receipt_number,
-            session.table.table_number,
-            float(session.subtotal_amount),
-            float(session.discount_amount),
-            float(session.tax_amount),
-            float(session.service_charge),
-            float(session.final_amount),
-            session.payment_method,
-            session.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            session.completed_at.strftime('%Y-%m-%d %H:%M:%S') if session.completed_at else '',
-            session.created_by.get_full_name() if session.created_by else 'System'
-        ])
-    
-    return response
-
-# Mobile ordering endpoints
-@api_view(['GET'])
-def mobile_available_tables(request):
-    """Get available tables for mobile ordering"""
-    tables = Table.objects.filter(
-        is_active=True,
-        status__in=['free', 'occupied']  # Allow ordering to occupied tables
-    ).order_by('table_number')
-    
-    return Response(TableSerializer(tables, many=True).data)
-
-@api_view(['GET'])
-def mobile_menu(request):
-    """Get menu for mobile ordering"""
-    return menu_for_ordering(request)
-
-@api_view(['POST'])
-def mobile_create_order(request):
-    """Create order from mobile interface"""
-    try:
-        serializer = OrderCreateSerializer(data=request.data)
-        if serializer.is_valid():
-            # Set source as mobile
-            order = serializer.save(
-                created_by=request.user if request.user.is_authenticated else None,
-                source='mobile'
-            )
-            
-            # Handle offline KDS
-            if is_kds_connected():
-                broadcast_order_update(order, None)
-            else:
-                create_order_backup(order)
-            
-            return Response(
-                OrderSerializer(order).data,
-                status=status.HTTP_201_CREATED
-            )
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-    except Exception as e:
-        logger.error(f"Error creating mobile order: {e}")
-        return Response(
-            {'error': 'Failed to create order'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-def mobile_order_status(request, order_number):
-    """Get order status for mobile"""
-    try:
-        order = Order.objects.get(order_number=order_number)
-        return Response({
-            'order': OrderSerializer(order).data,
-            'estimated_time': order.preparation_time_remaining,
-            'status_history': get_order_status_history(order)
-        })
-        
-    except Order.DoesNotExist:
-        return Response(
-            {'error': 'Order not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-# Additional API views to add to apps/restaurant/views.py
-# Add these functions at the end of your views.py file, before the mobile ordering endpoints
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def bulk_update_tables(request):
-    """Bulk update table statuses"""
-    try:
-        updates = request.data.get('updates', [])
-        updated_tables = []
-        
-        for update in updates:
-            table_id = update.get('table_id')
-            new_status = update.get('status')
-            
-            try:
-                table = Table.objects.get(id=table_id, is_active=True)
-                
-                # Validate status change
-                is_valid, message = validate_table_operations(table, new_status)
-                
-                if is_valid:
-                    old_status = table.status
-                    table.status = new_status
-                    table.save()
-                    
-                    broadcast_table_update(table, old_status)
-                    updated_tables.append(table.table_number)
-                    
-            except Table.DoesNotExist:
-                continue
-        
-        return Response({
-            'message': f'Updated {len(updated_tables)} tables',
-            'updated_tables': updated_tables
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in bulk table update: {e}")
-        return Response(
-            {'error': 'Failed to update tables'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def bulk_order_status_update(request):
-    """Bulk update order statuses"""
-    try:
-        order_ids = request.data.get('order_ids', [])
-        new_status = request.data.get('status')
-        
-        if not new_status or new_status not in dict(Order.STATUS_CHOICES):
-            return Response(
-                {'error': 'Invalid status'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        updated_orders = []
-        for order_id in order_ids:
-            try:
-                order = Order.objects.get(id=order_id)
-                old_status = order.status
-                order.update_status(new_status, request.user)
-                updated_orders.append(order.order_number)
-                
-            except Order.DoesNotExist:
-                continue
-        
-        return Response({
-            'message': f'Updated {len(updated_orders)} orders',
-            'updated_orders': updated_orders
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in bulk order status update: {e}")
-        return Response(
-            {'error': 'Failed to update orders'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def orders_by_table(request, table_id):
-    """Get orders by table ID"""
-    try:
-        table = Table.objects.get(id=table_id, is_active=True)
-        orders = table.orders.all().order_by('-created_at')
-        
-        # Filter by status if provided
-        status_filter = request.query_params.get('status')
-        if status_filter:
-            orders = orders.filter(status=status_filter)
-        
-        serializer = OrderSerializer(orders, many=True, context={'request': request})
-        return Response({
-            'table': TableSerializer(table).data,
-            'orders': serializer.data,
-            'total_orders': orders.count()
-        })
-        
-    except Table.DoesNotExist:
-        return Response(
-            {'error': 'Table not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def order_status_history(request, order_id):
-    """Get order status history"""
-    try:
-        order = Order.objects.get(id=order_id)
-        history = get_order_status_history(order)
-        
-        return Response({
-            'order': OrderSerializer(order, context={'request': request}).data,
-            'status_history': history
-        })
-        
-    except Order.DoesNotExist:
-        return Response(
-            {'error': 'Order not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def process_offline_orders(request):
-    """Process orders that were created when KDS was offline"""
-    try:
-        processed_count = process_offline_orders()
-        return Response({
-            'message': f'Processed {processed_count} offline orders',
-            'processed_count': processed_count
-        })
-    except Exception as e:
-        logger.error(f"Error processing offline orders: {e}")
-        return Response(
-            {'error': 'Failed to process offline orders'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def void_session(request, session_id):
-    """Void a billing session"""
-    try:
-        session = OrderSession.objects.get(session_id=session_id)
-        reason = request.data.get('reason', 'Admin void')
-        
-        # Mark as voided
-        session.payment_status = 'cancelled'
-        session.admin_notes = f"VOIDED by {request.user.get_full_name()}: {reason}"
-        session.is_active = False
-        session.completed_at = timezone.now()
-        session.save()
-        
-        # Free the table
-        session.table.mark_free()
-        
-        return Response({
-            'message': 'Session voided successfully',
-            'receipt_number': session.receipt_number
-        })
-        
-    except OrderSession.DoesNotExist:
-        return Response(
-            {'error': 'Session not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_table_analytics(request):
-    """Get table analytics for admin"""
-    try:
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
-            
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        # Get table utilization stats
-        sessions = OrderSession.objects.filter(
-            created_at__range=[date_from, date_to]
-        ).select_related('table')
-
-        table_stats = {}
-        for session in sessions:
-            table_number = session.table.table_number
-            if table_number not in table_stats:
-                table_stats[table_number] = {
-                    'sessions': 0,
-                    'revenue': 0.0,
-                    'avg_session_time': 0
-                }
-            
-            table_stats[table_number]['sessions'] += 1
-            table_stats[table_number]['revenue'] += float(session.final_amount)
-            
-            if session.completed_at:
-                session_time = (session.completed_at - session.created_at).total_seconds() / 60
-                table_stats[table_number]['avg_session_time'] += session_time
-
-        # Calculate averages
-        for table_data in table_stats.values():
-            if table_data['sessions'] > 0:
-                table_data['avg_session_time'] /= table_data['sessions']
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'table_stats': table_stats,
-            'total_tables': len(table_stats),
-            'total_sessions': sessions.count()
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating table analytics: {e}")
-        return Response(
-            {'error': 'Failed to generate analytics'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_order_analytics(request):
-    """Get order analytics for admin"""
-    try:
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
-            
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        orders = Order.objects.filter(
-            created_at__range=[date_from, date_to]
-        ).select_related('menu_item', 'menu_item__category')
-
-        # Status breakdown
-        status_breakdown = orders.values('status').annotate(
-            count=Count('id'),
-            revenue=Sum('total_price')
-        )
-
-        # Category breakdown
-        category_breakdown = orders.values(
-            'menu_item__category__name'
-        ).annotate(
-            count=Count('id'),
-            revenue=Sum('total_price')
-        )
-
-        # Most popular items
-        popular_items = orders.values(
-            'menu_item__name'
-        ).annotate(
-            count=Count('id'),
-            revenue=Sum('total_price')
-        ).order_by('-count')[:10]
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'total_orders': orders.count(),
-            'total_revenue': float(orders.aggregate(Sum('total_price'))['total_price__sum'] or 0),
-            'status_breakdown': list(status_breakdown),
-            'category_breakdown': list(category_breakdown),
-            'popular_items': list(popular_items)
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating order analytics: {e}")
-        return Response(
-            {'error': 'Failed to generate analytics'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_billing_reports(request):
-    """Generate comprehensive billing reports"""
-    try:
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
-            
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        sessions = OrderSession.objects.filter(
-            created_at__range=[date_from, date_to],
-            is_active=False
-        )
-
-        # Calculate comprehensive totals
-        totals = sessions.aggregate(
-            total_revenue=Sum('final_amount'),
-            total_discount=Sum('discount_amount'),
-            total_tax=Sum('tax_amount'),
-            total_service_charge=Sum('service_charge'),
-            session_count=Count('id'),
-            avg_bill=Avg('final_amount')
-        )
-
-        # Payment method breakdown
-        payment_breakdown = sessions.values('payment_method').annotate(
-            count=Count('id'),
-            amount=Sum('final_amount')
-        )
-
-        # Hourly breakdown
-        hourly_breakdown = sessions.extra({
-            'hour': "EXTRACT(hour FROM created_at)"
-        }).values('hour').annotate(
-            session_count=Count('id'),
-            revenue=Sum('final_amount')
-        ).order_by('hour')
-
-        # Daily breakdown
-        daily_breakdown = sessions.extra({
-            'date': "DATE(created_at)"
-        }).values('date').annotate(
-            session_count=Count('id'),
-            revenue=Sum('final_amount')
-        ).order_by('date')
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'summary': {
-                'total_sessions': totals['session_count'] or 0,
-                'total_revenue': float(totals['total_revenue'] or 0),
-                'total_discount': float(totals['total_discount'] or 0),
-                'total_tax': float(totals['total_tax'] or 0),
-                'total_service_charge': float(totals['total_service_charge'] or 0),
-                'average_bill': float(totals['avg_bill'] or 0)
-            },
-            'payment_breakdown': list(payment_breakdown),
-            'hourly_breakdown': list(hourly_breakdown),
-            'daily_breakdown': list(daily_breakdown)
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating billing reports: {e}")
-        return Response(
-            {'error': 'Failed to generate reports'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def admin_system_cleanup(request):
-    """Admin system cleanup operations"""
-    try:
-        from .utils import cleanup_old_data
-        
-        # Perform cleanup
-        cleanup_old_data()
-        
-        return Response({
-            'message': 'System cleanup completed successfully'
-        })
-
-    except Exception as e:
-        logger.error(f"Error during system cleanup: {e}")
-        return Response(
-            {'error': 'System cleanup failed'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def daily_sales_report(request):
-    """Generate daily sales report"""
-    try:
-        date = request.query_params.get('date')
-        if not date:
-            date = timezone.now().date()
-        else:
-            date = datetime.fromisoformat(date).date()
-
-        start_of_day = datetime.combine(date, datetime.min.time())
-        end_of_day = datetime.combine(date, datetime.max.time())
-
-        sessions = OrderSession.objects.filter(
-            created_at__range=[start_of_day, end_of_day],
-            is_active=False
-        )
-
-        # Calculate daily totals
-        totals = sessions.aggregate(
-            total_revenue=Sum('final_amount'),
-            total_sessions=Count('id'),
-            avg_bill=Avg('final_amount')
-        )
-
-        # Hourly breakdown
-        hourly_sales = sessions.extra({
-            'hour': "EXTRACT(hour FROM created_at)"
-        }).values('hour').annotate(
-            revenue=Sum('final_amount'),
-            session_count=Count('id')
-        ).order_by('hour')
-
-        return Response({
-            'date': date.isoformat(),
-            'summary': {
-                'total_revenue': float(totals['total_revenue'] or 0),
-                'total_sessions': totals['total_sessions'] or 0,
-                'average_bill': float(totals['avg_bill'] or 0)
-            },
-            'hourly_breakdown': list(hourly_sales)
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating daily sales report: {e}")
-        return Response(
-            {'error': 'Failed to generate report'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def table_utilization_report(request):
-    """Generate table utilization report"""
-    try:
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
-            
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        # Get all tables with their usage stats
-        tables = Table.objects.filter(is_active=True)
-        utilization_data = []
-
-        for table in tables:
-            sessions = table.order_sessions.filter(
-                created_at__range=[date_from, date_to]
-            )
-
-            total_sessions = sessions.count()
-            total_revenue = sessions.aggregate(Sum('final_amount'))['final_amount__sum'] or 0
-            
-            # Calculate average session time
-            completed_sessions = sessions.filter(completed_at__isnull=False)
-            avg_session_time = 0
-            if completed_sessions.exists():
-                total_time = sum([
-                    (session.completed_at - session.created_at).total_seconds() / 60
-                    for session in completed_sessions
-                ])
-                avg_session_time = total_time / completed_sessions.count()
-
-            utilization_data.append({
-                'table_number': table.table_number,
-                'capacity': table.capacity,
-                'total_sessions': total_sessions,
-                'total_revenue': float(total_revenue),
-                'avg_session_time_minutes': round(avg_session_time, 2),
-                'revenue_per_session': float(total_revenue / total_sessions) if total_sessions > 0 else 0
-            })
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'tables': utilization_data
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating table utilization report: {e}")
-        return Response(
-            {'error': 'Failed to generate report'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def menu_performance_report(request):
-    """Generate menu performance report"""
-    try:
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        
-        if not date_from:
-            date_from = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
-            date_from = datetime.fromisoformat(date_from)
-            
-        if not date_to:
-            date_to = timezone.now()
-        else:
-            date_to = datetime.fromisoformat(date_to)
-
-        orders = Order.objects.filter(
-            created_at__range=[date_from, date_to],
-            status__in=['served', 'ready']  # Only completed orders
-        ).select_related('menu_item', 'menu_item__category')
-
-        # Item performance
-        item_performance = orders.values(
-            'menu_item__name',
-            'menu_item__category__name'
-        ).annotate(
-            total_orders=Count('id'),
-            total_quantity=Sum('quantity'),
-            total_revenue=Sum('total_price'),
-            avg_price=Avg('unit_price')
-        ).order_by('-total_revenue')
-
-        # Category performance
-        category_performance = orders.values(
-            'menu_item__category__name'
-        ).annotate(
-            total_orders=Count('id'),
-            total_revenue=Sum('total_price')
-        ).order_by('-total_revenue')
-
-        return Response({
-            'date_range': {
-                'from': date_from.isoformat(),
-                'to': date_to.isoformat()
-            },
-            'item_performance': list(item_performance),
-            'category_performance': list(category_performance),
-            'total_orders': orders.count(),
-            'total_revenue': float(orders.aggregate(Sum('total_price'))['total_price__sum'] or 0)
-        })
-
-    except Exception as e:
-        logger.error(f"Error generating menu performance report: {e}")
-        return Response(
-            {'error': 'Failed to generate report'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )        

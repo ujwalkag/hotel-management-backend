@@ -1,25 +1,23 @@
-# apps/restaurant/utils.py - Enhanced utility functions with offline support
+# apps/restaurant/utils.py - COMPLETE Enhanced utility functions with ALL fixes
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.utils import timezone
 from django.core.cache import cache
 import logging
 import json
-import requests
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
 
 def broadcast_order_update(order, old_status=None):
-    """Enhanced broadcast order updates with offline handling"""
+    """Enhanced broadcast order updates with offline handling - FIXED GROUP NAMES"""
     try:
         from .serializers import OrderKDSSerializer, OrderSerializer
 
         # Prepare order data
         kds_data = OrderKDSSerializer(order).data
         full_data = OrderSerializer(order).data
-
         timestamp = timezone.now().isoformat()
 
         # Determine update type
@@ -38,10 +36,11 @@ def broadcast_order_update(order, old_status=None):
             'timestamp': timestamp
         }, timeout=3600)  # 1 hour
 
-        # Broadcast to Kitchen Display System
         if channel_layer:
+            # FIXED: Correct group names matching consumers.py
+            # Broadcast to Kitchen Display System
             async_to_sync(channel_layer.group_send)(
-                'kds_kitchen_display',
+                'kds_kitchen_display',  # FIXED: Matches consumers.py
                 {
                     'type': 'new_order_notification' if update_type == 'new_order' else 'order_status_updated',
                     'order': kds_data,
@@ -55,7 +54,7 @@ def broadcast_order_update(order, old_status=None):
 
             # Broadcast to ordering interface
             async_to_sync(channel_layer.group_send)(
-                'ordering_ordering',
+                'ordering_ordering',  # FIXED: Matches consumers.py
                 {
                     'type': 'order_confirmed',
                     'order_id': str(order.id),
@@ -67,7 +66,7 @@ def broadcast_order_update(order, old_status=None):
 
             # Broadcast to table management
             async_to_sync(channel_layer.group_send)(
-                'table_mgmt_table_management',
+                'table_mgmt_table_management',  # FIXED: Matches consumers.py
                 {
                     'type': 'new_order_placed',
                     'table_id': str(order.table.id),
@@ -82,10 +81,9 @@ def broadcast_order_update(order, old_status=None):
         logger.error(f"Error broadcasting order update: {e}")
 
 def broadcast_table_update(table, old_status=None):
-    """Enhanced broadcast table status updates"""
+    """Enhanced broadcast table status updates - FIXED"""
     try:
         from .serializers import TableSerializer
-
         table_data = TableSerializer(table).data
         timestamp = timezone.now().isoformat()
 
@@ -98,16 +96,16 @@ def broadcast_table_update(table, old_status=None):
         }, timeout=3600)
 
         if channel_layer:
-            # Broadcast to all relevant channels
+            # FIXED: Broadcast to all relevant channels with correct names
             channels = [
                 'kds_kitchen_display',
                 'ordering_ordering',
                 'table_mgmt_table_management'
             ]
 
-            for channel in channels:
+            for channel_name in channels:
                 async_to_sync(channel_layer.group_send)(
-                    channel,
+                    channel_name,
                     {
                         'type': 'table_status_updated',
                         'table': table_data,
@@ -123,19 +121,22 @@ def broadcast_table_update(table, old_status=None):
     except Exception as e:
         logger.error(f"Error broadcasting table update: {e}")
 
+# FIXED: KDS connection management with proper increment/decrement
 def is_kds_connected():
     """Check if Kitchen Display System is connected"""
     try:
-        # Check if there are active WebSocket connections for KDS
         connection_count = cache.get('kds_connection_count', 0)
         last_heartbeat = cache.get('kds_last_heartbeat')
         
         if connection_count > 0 and last_heartbeat:
             # Check if last heartbeat was within last 60 seconds
-            heartbeat_time = timezone.datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+            if isinstance(last_heartbeat, str):
+                heartbeat_time = timezone.datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+            else:
+                heartbeat_time = last_heartbeat
             time_diff = (timezone.now() - heartbeat_time).total_seconds()
             return time_diff < 60
-            
+        
         return False
     except Exception as e:
         logger.error(f"Error checking KDS connection: {e}")
@@ -209,7 +210,7 @@ def process_offline_orders():
                     backup.save()
                     
                     processed_count += 1
-                    
+                
             except Exception as e:
                 logger.error(f"Error processing offline order {backup.id}: {e}")
         
@@ -221,23 +222,27 @@ def process_offline_orders():
         return 0
 
 def generate_receipt_data(session):
-    """Generate receipt data for printing"""
+    """Generate receipt data for printing - ENHANCED"""
     try:
+        from django.conf import settings
+        
         orders = session.get_session_orders()
         
         receipt_data = {
             'restaurant_info': {
-                'name': 'Hotel Management Restaurant',
-                'address': 'Your Restaurant Address',
-                'phone': 'Your Phone Number',
-                'gst_number': 'Your GST Number'
+                'name': getattr(settings, 'COMPANY_NAME', 'Hotel Restaurant'),
+                'address': getattr(settings, 'COMPANY_ADDRESS', 'Restaurant Address'),
+                'phone': getattr(settings, 'COMPANY_PHONE', 'Phone Number'),
+                'gst_number': getattr(settings, 'COMPANY_GSTIN', 'GST Number'),
+                'fssai': getattr(settings, 'COMPANY_FSSAI', 'FSSAI Number')
             },
             'receipt_details': {
                 'receipt_number': session.receipt_number,
                 'table_number': session.table.table_number,
-                'date': session.created_at.strftime('%Y-%m-%d'),
+                'date': session.created_at.strftime('%d-%m-%Y'),
                 'time': session.created_at.strftime('%H:%M:%S'),
-                'server': session.created_by.get_full_name() if session.created_by else 'System'
+                'server': session.created_by.get_full_name() if session.created_by else 'System',
+                'cashier': session.billed_by.get_full_name() if session.billed_by else 'System'
             },
             'items': [
                 {
@@ -252,6 +257,7 @@ def generate_receipt_data(session):
             'totals': {
                 'subtotal': float(session.subtotal_amount),
                 'discount': float(session.discount_amount),
+                'discount_percent': float(session.discount_percentage),
                 'tax': float(session.tax_amount),
                 'service_charge': float(session.service_charge),
                 'final_amount': float(session.final_amount)
@@ -271,26 +277,108 @@ def generate_receipt_data(session):
         logger.error(f"Error generating receipt data: {e}")
         return None
 
-def calculate_gst_breakdown(amount, gst_rate=0.05):
-    """Calculate GST breakdown for billing"""
+def generate_complete_bill(session, payment_method='cash', customer_name='Guest', customer_phone=''):
+    """Generate complete bill with GST and all details"""
+    try:
+        # Calculate totals
+        session.calculate_totals()
+        
+        # Update payment details
+        session.payment_method = payment_method
+        
+        # Generate receipt data
+        receipt_data = generate_receipt_data(session)
+        
+        # Add customer details
+        receipt_data['customer'] = {
+            'name': customer_name or 'Guest',
+            'phone': customer_phone or 'N/A'
+        }
+        
+        # Complete the session
+        session.complete_session()
+        
+        return receipt_data
+        
+    except Exception as e:
+        logger.error(f"Error generating complete bill: {e}")
+        return None
+
+def calculate_gst_breakdown(amount, gst_rate=0.18, interstate=False):
+    """Calculate GST breakdown for billing - ENHANCED"""
     try:
         gst_amount = amount * Decimal(str(gst_rate))
-        cgst = gst_amount / 2  # Central GST
-        sgst = gst_amount / 2  # State GST
         
-        return {
-            'total_gst': float(gst_amount),
-            'cgst': float(cgst),
-            'sgst': float(sgst),
-            'gst_rate': float(gst_rate * 100)
-        }
+        if interstate:
+            # IGST for interstate
+            return {
+                'total_gst': float(gst_amount),
+                'igst': float(gst_amount),
+                'cgst': 0.0,
+                'sgst': 0.0,
+                'gst_rate': float(gst_rate * 100),
+                'interstate': True
+            }
+        else:
+            # CGST + SGST for intrastate
+            cgst = sgst = gst_amount / 2
+            return {
+                'total_gst': float(gst_amount),
+                'igst': 0.0,
+                'cgst': float(cgst),
+                'sgst': float(sgst),
+                'gst_rate': float(gst_rate * 100),
+                'interstate': False
+            }
+            
     except Exception as e:
         logger.error(f"Error calculating GST: {e}")
         return {
             'total_gst': 0.0,
+            'igst': 0.0,
             'cgst': 0.0,
             'sgst': 0.0,
-            'gst_rate': 0.0
+            'gst_rate': 0.0,
+            'interstate': False
+        }
+
+def get_system_health():
+    """Get system health information"""
+    try:
+        from .models import Order, Table, OrderSession, OfflineOrderBackup
+        
+        health_data = {
+            'database': {
+                'status': 'healthy',
+                'active_orders': Order.objects.filter(
+                    status__in=['pending', 'preparing', 'ready']
+                ).count(),
+                'occupied_tables': Table.objects.filter(status='occupied').count(),
+                'active_sessions': OrderSession.objects.filter(is_active=True).count()
+            },
+            'kds': {
+                'connected': is_kds_connected(),
+                'offline_orders': OfflineOrderBackup.objects.filter(
+                    is_processed=False
+                ).count()
+            },
+            'cache': {
+                'status': 'healthy' if cache.get('health_check') else 'warning'
+            },
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        # Set health check cache
+        cache.set('health_check', True, timeout=300)  # 5 minutes
+        
+        return health_data
+        
+    except Exception as e:
+        logger.error(f"Error getting system health: {e}")
+        return {
+            'status': 'error',
+            'message': str(e),
+            'timestamp': timezone.now().isoformat()
         }
 
 def validate_table_operations(table, operation):
@@ -423,73 +511,31 @@ def cleanup_old_data():
             processed_at__lt=cutoff_date
         ).delete()[0]
         
-        # Clear old cache entries
-        # This would need to be implemented based on your cache backend
-        
         logger.info(f"Cleaned up {deleted_count} old offline order backups")
         
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
-def get_system_health():
-    """Get system health information"""
-    try:
-        from .models import Order, Table, OrderSession, OfflineOrderBackup
-        
-        health_data = {
-            'database': {
-                'status': 'healthy',
-                'active_orders': Order.objects.filter(
-                    status__in=['pending', 'preparing', 'ready']
-                ).count(),
-                'occupied_tables': Table.objects.filter(status='occupied').count(),
-                'active_sessions': OrderSession.objects.filter(is_active=True).count()
-            },
-            'kds': {
-                'connected': is_kds_connected(),
-                'offline_orders': OfflineOrderBackup.objects.filter(
-                    is_processed=False
-                ).count()
-            },
-            'cache': {
-                'status': 'healthy' if cache.get('health_check') else 'warning'
-            },
-            'timestamp': timezone.now().isoformat()
-        }
-        
-        # Set health check cache
-        cache.set('health_check', True, timeout=300)  # 5 minutes
-        
-        return health_data
-        
-    except Exception as e:
-        logger.error(f"Error getting system health: {e}")
-        return {
-            'status': 'error',
-            'message': str(e),
-            'timestamp': timezone.now().isoformat()
-        }
-
 # Utility functions for color coding and formatting
 def get_order_priority_color(priority):
     """Get color coding for order priority"""
     colors = {
-        'low': '#6B7280',     # Gray
+        'low': '#6B7280',  # Gray
         'normal': '#3B82F6',  # Blue
-        'high': '#F59E0B',    # Orange
-        'urgent': '#EF4444'   # Red
+        'high': '#F59E0B',  # Orange
+        'urgent': '#EF4444'  # Red
     }
     return colors.get(priority, '#3B82F6')
 
 def get_order_status_color(status):
     """Get color coding for order status"""
     colors = {
-        'pending': '#F59E0B',    # Orange
+        'pending': '#F59E0B',  # Orange
         'confirmed': '#3B82F6',  # Blue
         'preparing': '#8B5CF6',  # Purple
-        'ready': '#10B981',      # Green
-        'served': '#6B7280',     # Gray
-        'cancelled': '#EF4444'   # Red
+        'ready': '#10B981',  # Green
+        'served': '#6B7280',  # Gray
+        'cancelled': '#EF4444'  # Red
     }
     return colors.get(status, '#6B7280')
 
