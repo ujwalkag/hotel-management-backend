@@ -230,12 +230,12 @@ class TableViewSet(viewsets.ModelViewSet):
             )
 
         # Apply discounts and adjustments
-        discount_amount = request.data.get('discount_amount', 0)
-        discount_percentage = request.data.get('discount_percentage', 0)
-        service_charge = request.data.get('service_charge', 0)
-        payment_method = request.data.get('payment_method', 'cash')
-        notes = request.data.get('notes', '')
-        admin_notes = request.data.get('admin_notes', '')
+        discount_amount = request.data.get('discount_amount', session.discount_amount)
+        discount_percentage = request.data.get('discount_percentage', session.discount_percentage)
+        service_charge = request.data.get('service_charge', session.service_charge)
+        payment_method = request.data.get('payment_method', session.payment_method)
+        notes = request.data.get('notes', session.notes)
+        admin_notes = request.data.get('admin_notes', session.admin_notes)
 
         # Update session
         session.discount_amount = Decimal(str(discount_amount))
