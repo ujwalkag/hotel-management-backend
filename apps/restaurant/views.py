@@ -1,4 +1,5 @@
 # apps/restaurant/views.py - COMPLETE Enhanced Views with ALL Functionality + Your Updates
+from rest_framework.views import APIView
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
@@ -93,26 +94,153 @@ class MenuItemViewSet(viewsets.ModelViewSet):
         instance.is_active = False
         instance.save()
 
+class TablesWithOrdersView(APIView):
+    """Get tables with their active orders"""
+    def get(self, request):
+        try:
+            tables = Table.objects.filter(is_active=True).prefetch_related(
+                'orders__menu_item'
+            ).annotate(
+                active_orders_count=models.Count('orders', filter=models.Q(orders__status__in=['pending', 'confirmed', 'preparing', 'ready']))
+            )
+            
+            table_data = []
+            for table in tables:
+                active_orders = table.orders.filter(status__in=['pending', 'confirmed', 'preparing', 'ready'])
+                table_data.append({
+                    'id': table.id,
+                    'table_number': table.table_number,
+                    'capacity': table.capacity,
+                    'status': table.status,
+                    'location': table.location,
+                    'active_orders_count': active_orders.count(),
+                    'active_orders': [{
+                        'id': order.id,
+                        'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
+                        'quantity': order.quantity,
+                        'status': order.status,
+                        'order_number': order.order_number,
+                        'total_price': float(order.total_price),
+                        'created_by_name': order.created_by.get_full_name() if order.created_by else 'System'
+                    } for order in active_orders],
+                    'total_bill_amount': float(sum(order.total_price for order in active_orders)),
+                    'time_occupied': table.get_occupied_duration() if table.status == 'occupied' else 0
+                })
+            
+            return Response(table_data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+class MenuForOrderingView(APIView):
+    """Get menu organized for ordering interface"""
+    def get(self, request):
+        try:
+            from .models import MenuCategory, MenuItem
+            
+            categories = MenuCategory.objects.filter(is_active=True).prefetch_related(
+                models.Prefetch(
+                    'items',
+                    queryset=MenuItem.objects.filter(is_active=True, availability='available')
+                )
+            )
+            
+            menu_data = []
+            for category in categories:
+                items = category.items.all()
+                if items.exists():
+                    menu_data.append({
+                        'id': category.id,
+                        'name': category.name,
+                        'description': category.description,
+                        'icon': getattr(category, 'icon', '🍽️'),
+                        'items': [{
+                            'id': item.id,
+                            'name': item.name,
+                            'name_en': item.name,
+                            'description': item.description,
+                            'description_en': item.description,
+                            'price': float(item.price),
+                            'category_id': category.id,
+                            'is_veg': getattr(item, 'is_veg', True),
+                            'is_spicy': getattr(item, 'is_spicy', False),
+                            'preparation_time': getattr(item, 'preparation_time', 15),
+                            'availability': item.availability,
+                            'image': item.image.url if item.image else None
+                        } for item in items]
+                    })
+            
+            return Response(menu_data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+class DashboardStatsView(APIView):
+    """Get dashboard statistics"""
+    def get(self, request):
+        try:
+            from django.utils import timezone
+            from datetime import datetime, timedelta
+            
+            today = timezone.now().date()
+            
+            # Table stats
+            total_tables = Table.objects.filter(is_active=True).count()
+            free_tables = Table.objects.filter(is_active=True, status='free').count()
+            occupied_tables = Table.objects.filter(is_active=True, status='occupied').count()
+            
+            # Order stats
+            preparing_orders = Order.objects.filter(status='preparing').count()
+            
+            # Revenue stats (you might need to adjust based on your billing model)
+            try:
+                from apps.bills.models import Bill
+                today_revenue = Bill.objects.filter(
+                    created_at__date=today
+                ).aggregate(
+                    total=models.Sum('total_amount')
+                )['total'] or 0
+            except:
+                today_revenue = 0
+            
+            return Response({
+                'tables': {
+                    'total': total_tables,
+                    'free': free_tables,
+                    'occupied': occupied_tables,
+                    'reserved': Table.objects.filter(is_active=True, status='reserved').count(),
+                    'cleaning': Table.objects.filter(is_active=True, status='cleaning').count(),
+                    'maintenance': Table.objects.filter(is_active=True, status='maintenance').count()
+                },
+                'orders': {
+                    'preparing': preparing_orders,
+                    'pending': Order.objects.filter(status='pending').count(),
+                    'ready': Order.objects.filter(status='ready').count()
+                },
+                'revenue': {
+                    'today': float(today_revenue)
+                }
+            })
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
 class TableViewSet(viewsets.ModelViewSet):
     """Enhanced ViewSet for table management with complete CRUD"""
     queryset = Table.objects.filter(is_active=True)
     serializer_class = TableSerializer
     permission_classes = [IsAuthenticated]
-    
+
     @action(detail=True, methods=['get', 'post'])
     def manage_orders(self, request, pk=None):
         """Admin functionality to view and modify table orders"""
         table = self.get_object()
-        
+
         # Only allow admin and manager access
         if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
             raise PermissionDenied('Admin or Manager access required')
-        
+
         if request.method == 'GET':
             # Get all orders for this table
             session_orders = table.get_session_orders()
             orders_data = []
-            
+
             for order in session_orders:
                 orders_data.append({
                     'id': order.id,
@@ -127,40 +255,40 @@ class TableViewSet(viewsets.ModelViewSet):
                     'created_at': order.created_at.isoformat(),
                     'can_modify': order.status not in ['served', 'cancelled']
                 })
-            
+
             return Response({
                 'table_number': table.table_number,
                 'orders': orders_data,
                 'total_amount': float(table.get_total_bill_amount()),
                 'can_add_items': table.status == 'occupied'
             })
-        
+
         elif request.method == 'POST':
             action_type = request.data.get('action')
-            
+
             if action_type == 'add_custom_item':
                 # Add custom item to table
                 item_name = request.data.get('item_name')
                 quantity = request.data.get('quantity', 1)
                 unit_price = request.data.get('unit_price', 0)
                 special_instructions = request.data.get('special_instructions', '')
-                
+
                 if not all([item_name, unit_price]):
                     return Response(
                         {'error': 'Item name and price are required'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                
+
                 try:
                     # Create a custom menu item for this order
                     from .models import MenuItem, MenuCategory
-                    
+
                     # Get or create "Custom Items" category
                     custom_category, created = MenuCategory.objects.get_or_create(
                         name="Custom Items",
                         defaults={'description': 'Admin added custom items'}
                     )
-                    
+
                     # Create temporary menu item
                     custom_item = MenuItem.objects.create(
                         name=item_name,
@@ -170,7 +298,7 @@ class TableViewSet(viewsets.ModelViewSet):
                         availability='available',
                         is_active=True
                     )
-                    
+
                     # Create the order
                     order = Order.objects.create(
                         table=table,
@@ -182,22 +310,22 @@ class TableViewSet(viewsets.ModelViewSet):
                         source='admin_added',
                         priority='normal'
                     )
-                    
+
                     # Broadcast the new order
                     broadcast_order_update(order, None)
-                    
+
                     return Response({
                         'message': 'Custom item added successfully',
                         'order': OrderSerializer(order, context={'request': request}).data
                     })
-                    
+
                 except Exception as e:
                     logger.error(f"Error adding custom item: {e}")
                     return Response(
                         {'error': f'Failed to add custom item: {str(e)}'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
-            
+
             return Response(
                 {'error': 'Invalid action'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -428,38 +556,38 @@ class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
-     
-     
+
+
     @action(detail=False, methods=['post'])
     def admin_bulk_modify(self, request):
         """Admin bulk modification of orders for a table"""
         if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
             raise PermissionDenied('Admin or Manager access required')
-        
+
         table_id = request.data.get('table_id')
         modifications = request.data.get('modifications', [])
-        
+
         if not table_id or not modifications:
             return Response(
                 {'error': 'Table ID and modifications are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             table = Table.objects.get(id=table_id, is_active=True)
             modified_orders = []
-            
+
             with transaction.atomic():
                 for mod in modifications:
                     order_id = mod.get('order_id')
                     action = mod.get('action')
-                    
+
                     try:
                         order = Order.objects.get(id=order_id, table=table)
-                        
+
                         if order.status in ['served', 'cancelled']:
                             continue  # Skip already completed orders
-                        
+
                         if action == 'update_quantity':
                             new_quantity = mod.get('quantity')
                             if new_quantity and new_quantity > 0:
@@ -468,25 +596,25 @@ class OrderViewSet(viewsets.ModelViewSet):
                                 order.admin_notes = f"Bulk update by {request.user.get_full_name()}"
                                 order.save()
                                 modified_orders.append(order)
-                        
+
                         elif action == 'cancel':
                             order.status = 'cancelled'
                             order.admin_notes = f"Bulk cancelled by {request.user.get_full_name()}"
                             order.save()
                             modified_orders.append(order)
-                            
+
                     except Order.DoesNotExist:
                         continue
-                
+
                 # Broadcast all updates
                 for order in modified_orders:
                     broadcast_order_update(order, None)
-            
+
             return Response({
                 'message': f'Successfully modified {len(modified_orders)} orders',
                 'modified_count': len(modified_orders)
             })
-            
+
         except Table.DoesNotExist:
             return Response(
                 {'error': 'Table not found'},
@@ -502,20 +630,20 @@ class OrderViewSet(viewsets.ModelViewSet):
     def admin_modify(self, request, pk=None):
         """Admin functionality to modify existing orders"""
         order = self.get_object()
-        
+
         # Only allow admin and manager access
         if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
             raise PermissionDenied('Admin or Manager access required')
-        
+
         # Don't allow modification of served or cancelled orders
         if order.status in ['served', 'cancelled']:
             return Response(
                 {'error': 'Cannot modify served or cancelled orders'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         action_type = request.data.get('action')
-        
+
         try:
             with transaction.atomic():
                 if action_type == 'update_quantity':
@@ -525,18 +653,18 @@ class OrderViewSet(viewsets.ModelViewSet):
                             {'error': 'Valid quantity is required'},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                    
+
                     order.quantity = new_quantity
                     order.total_price = order.unit_price * new_quantity
                     order.admin_notes = f"Quantity updated by {request.user.get_full_name()} at {timezone.now()}"
                     order.save()
-                    
+
                 elif action_type == 'update_instructions':
                     new_instructions = request.data.get('special_instructions', '')
                     order.special_instructions = new_instructions
                     order.admin_notes = f"Instructions updated by {request.user.get_full_name()} at {timezone.now()}"
                     order.save()
-                    
+
                 elif action_type == 'update_priority':
                     new_priority = request.data.get('priority', 'normal')
                     if new_priority not in dict(Order.PRIORITY_CHOICES):
@@ -547,26 +675,26 @@ class OrderViewSet(viewsets.ModelViewSet):
                     order.priority = new_priority
                     order.admin_notes = f"Priority updated to {new_priority} by {request.user.get_full_name()} at {timezone.now()}"
                     order.save()
-                    
+
                 elif action_type == 'cancel_order':
                     order.status = 'cancelled'
                     order.admin_notes = f"Cancelled by {request.user.get_full_name()} at {timezone.now()}"
                     order.save()
-                    
+
                 else:
                     return Response(
                         {'error': 'Invalid action'},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                
+
                 # Broadcast the update
                 broadcast_order_update(order, None)
-                
+
                 return Response({
                     'message': 'Order updated successfully',
                     'order': OrderSerializer(order, context={'request': request}).data
                 })
-                
+
         except Exception as e:
             logger.error(f"Error modifying order {order.id}: {e}")
             return Response(
@@ -705,7 +833,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=True, methods=['post'])
     def modify_order(self, request, pk=None):
         """Admin functionality to modify existing orders"""
@@ -1227,4 +1355,5 @@ def export_orders_csv(request):
         ])
 
     return response
+
 

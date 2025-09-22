@@ -40,4 +40,18 @@ urlpatterns = [
     path('tables/<int:pk>/manage_orders/', views.TableViewSet.as_view({'get': 'manage_orders', 'post': 'manage_orders'}), name='table-manage-orders'),
     path('orders/<int:pk>/admin_modify/', views.OrderViewSet.as_view({'post': 'admin_modify'}), name='order-admin-modify'),
     path('orders/admin_bulk_modify/', views.OrderViewSet.as_view({'post': 'admin_bulk_modify'}), name='order-admin-bulk-modify'),
+    # REQUIRED: Additional endpoints that your frontend is calling
+    path('tables/with_orders/', views.TablesWithOrdersView.as_view(), name='tables-with-orders'),
+    path('menu-for-ordering/', views.MenuForOrderingView.as_view(), name='menu-for-ordering'),
+    path('dashboard-stats/', views.DashboardStatsView.as_view(), name='dashboard-stats'),
+
+    # Enhanced billing endpoints
+    #path('bills/enhanced/active_tables_dashboard/', views.ActiveTablesDashboardView.as_view(), name='active-tables-dashboard'),
+    #path('bills/enhanced/calculate_bill_with_gst/', views.CalculateBillWithGSTView.as_view(), name='calculate-bill-gst'),
+    #path('bills/enhanced/generate_final_bill/', views.GenerateFinalBillView.as_view(), name='generate-final-bill'),
+
+    # Admin order management endpoints
+    #path('tables/<int:pk>/manage_orders/', views.TableViewSet.as_view({'get': 'manage_orders', 'post': 'manage_orders'}), name='table-manage-orders'),
+    #path('orders/<int:pk>/admin_modify/', views.OrderViewSet.as_view({'post': 'admin_modify'}), name='order-admin-modify'),
+    path('orders/bulk_create/', views.OrderViewSet.as_view({'post': 'bulk_create'}), name='order-bulk-create'),
 ]
