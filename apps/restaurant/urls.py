@@ -37,4 +37,7 @@ urlpatterns = [
     
     # Reports and exports
     path('exports/orders-csv/', views.export_orders_csv, name='export-orders-csv'),
+    path('tables/<int:pk>/manage_orders/', views.TableViewSet.as_view({'get': 'manage_orders', 'post': 'manage_orders'}), name='table-manage-orders'),
+    path('orders/<int:pk>/admin_modify/', views.OrderViewSet.as_view({'post': 'admin_modify'}), name='order-admin-modify'),
+    path('orders/admin_bulk_modify/', views.OrderViewSet.as_view({'post': 'admin_bulk_modify'}), name='order-admin-bulk-modify'),
 ]

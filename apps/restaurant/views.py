@@ -10,11 +10,12 @@ from django.http import HttpResponse, JsonResponse
 from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
+from django.db import transaction
 import json
 import csv
 
 from .models import (
-    Table, MenuCategory, MenuItem, Order, OrderSession, 
+    Table, MenuCategory, MenuItem, Order, OrderSession,
     KitchenDisplaySettings, OfflineOrderBackup
 )
 from .serializers import (
@@ -27,7 +28,7 @@ from .serializers import (
 from .utils import (
     broadcast_order_update, broadcast_table_update, is_kds_connected,
     create_order_backup, process_offline_orders, generate_receipt_data,
-    get_system_health, 
+    get_system_health,
     generate_complete_bill, calculate_gst_breakdown, increment_kds_connections,
     decrement_kds_connections, update_kds_heartbeat
 )
@@ -71,15 +72,15 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = MenuItem.objects.filter(is_active=True).select_related('category')
-        
+
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category_id=category)
-        
+
         availability = self.request.query_params.get('availability')
         if availability:
             queryset = queryset.filter(availability=availability)
-        
+
         return queryset.order_by('category__display_order', 'display_order', 'name')
 
     def get_serializer_class(self):
@@ -97,6 +98,110 @@ class TableViewSet(viewsets.ModelViewSet):
     queryset = Table.objects.filter(is_active=True)
     serializer_class = TableSerializer
     permission_classes = [IsAuthenticated]
+    
+    @action(detail=True, methods=['get', 'post'])
+    def manage_orders(self, request, pk=None):
+        """Admin functionality to view and modify table orders"""
+        table = self.get_object()
+        
+        # Only allow admin and manager access
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+            raise PermissionDenied('Admin or Manager access required')
+        
+        if request.method == 'GET':
+            # Get all orders for this table
+            session_orders = table.get_session_orders()
+            orders_data = []
+            
+            for order in session_orders:
+                orders_data.append({
+                    'id': order.id,
+                    'order_number': order.order_number,
+                    'menu_item_name': order.menu_item.name,
+                    'menu_item_id': order.menu_item.id,
+                    'quantity': order.quantity,
+                    'unit_price': float(order.unit_price),
+                    'total_price': float(order.total_price),
+                    'status': order.status,
+                    'special_instructions': order.special_instructions,
+                    'created_at': order.created_at.isoformat(),
+                    'can_modify': order.status not in ['served', 'cancelled']
+                })
+            
+            return Response({
+                'table_number': table.table_number,
+                'orders': orders_data,
+                'total_amount': float(table.get_total_bill_amount()),
+                'can_add_items': table.status == 'occupied'
+            })
+        
+        elif request.method == 'POST':
+            action_type = request.data.get('action')
+            
+            if action_type == 'add_custom_item':
+                # Add custom item to table
+                item_name = request.data.get('item_name')
+                quantity = request.data.get('quantity', 1)
+                unit_price = request.data.get('unit_price', 0)
+                special_instructions = request.data.get('special_instructions', '')
+                
+                if not all([item_name, unit_price]):
+                    return Response(
+                        {'error': 'Item name and price are required'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                try:
+                    # Create a custom menu item for this order
+                    from .models import MenuItem, MenuCategory
+                    
+                    # Get or create "Custom Items" category
+                    custom_category, created = MenuCategory.objects.get_or_create(
+                        name="Custom Items",
+                        defaults={'description': 'Admin added custom items'}
+                    )
+                    
+                    # Create temporary menu item
+                    custom_item = MenuItem.objects.create(
+                        name=item_name,
+                        description=f"Custom item added by {request.user.get_full_name()}",
+                        category=custom_category,
+                        price=Decimal(str(unit_price)),
+                        availability='available',
+                        is_active=True
+                    )
+                    
+                    # Create the order
+                    order = Order.objects.create(
+                        table=table,
+                        menu_item=custom_item,
+                        quantity=quantity,
+                        special_instructions=special_instructions,
+                        created_by=request.user,
+                        status='pending',
+                        source='admin_added',
+                        priority='normal'
+                    )
+                    
+                    # Broadcast the new order
+                    broadcast_order_update(order, None)
+                    
+                    return Response({
+                        'message': 'Custom item added successfully',
+                        'order': OrderSerializer(order, context={'request': request}).data
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Error adding custom item: {e}")
+                    return Response(
+                        {'error': f'Failed to add custom item: {str(e)}'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    )
+            
+            return Response(
+                {'error': 'Invalid action'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
     def get_queryset(self):
         queryset = Table.objects.filter(is_active=True)
@@ -130,12 +235,12 @@ class TableViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         """Soft delete - mark as inactive instead of deleting"""
         from rest_framework.exceptions import ValidationError
-        
+
         if instance.status == 'occupied':
             raise ValidationError("Cannot delete occupied table")
         if instance.get_active_orders().exists():
             raise ValidationError("Cannot delete table with active orders")
-        
+
         instance.is_active = False
         instance.save()
 
@@ -147,14 +252,14 @@ class TableViewSet(viewsets.ModelViewSet):
             'orders__created_by',
             'order_sessions'
         )
-        
+
         # Add calculated fields
         for table in tables:
             table.active_orders = table.get_active_orders()
             table.active_orders_count = table.active_orders.count()
             table.total_bill_amount = table.get_total_bill_amount()
             table.time_occupied = table.get_occupancy_duration()
-            
+
             # Get active session info
             active_session = table.order_sessions.filter(is_active=True).first()
             if active_session:
@@ -188,13 +293,13 @@ class TableViewSet(viewsets.ModelViewSet):
 
         old_status = table.status
         table.status = new_status
-        
+
         # Set appropriate timestamps
         if new_status == 'occupied':
             table.last_occupied_at = timezone.now()
         elif new_status == 'free':
             table.last_billed_at = timezone.now()
-        
+
         table.save()
 
         # Broadcast update
@@ -224,13 +329,13 @@ class TableViewSet(viewsets.ModelViewSet):
 
         # Add order details
         orders = session.get_session_orders()
-        
+
         response_data = OrderSessionSerializer(session).data
         response_data['orders'] = OrderSerializer(orders, many=True, context={'request': request}).data
         response_data['order_count'] = orders.count()
 
         return Response(response_data)
-        
+
 
     @action(detail=True, methods=['post'])
     def complete_billing(self, request, pk=None):
@@ -264,11 +369,11 @@ class TableViewSet(viewsets.ModelViewSet):
             session.payment_method = payment_method
             session.notes = notes
             session.admin_notes = admin_notes
-        
+
             # CRITICAL FIX: Generate receipt_number if missing
             if not session.receipt_number:
                 session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
-        
+
             # Calculate totals and complete session
             final_amount = session.calculate_totals()
             session.complete_session(request.user)
@@ -283,7 +388,7 @@ class TableViewSet(viewsets.ModelViewSet):
                 'table_status': table.status,
                 'session_data': OrderSessionSerializer(session).data
             })
-        
+
         except Exception as e:
             logger.error(f"Error completing billing for table {table.table_number}: {e}")
             return Response(
@@ -295,12 +400,12 @@ class TableViewSet(viewsets.ModelViewSet):
     def print_bill(self, request, pk=None):
         """Mark bill as printed and return print-ready data"""
         table = self.get_object()
-        
+
         session = table.order_sessions.filter(is_active=True).first()
         if not session:
             # Try to get the most recent completed session
             session = table.order_sessions.filter(is_active=False).first()
-        
+
         if not session:
             return Response(
                 {'error': 'No billing session found'},
@@ -308,7 +413,7 @@ class TableViewSet(viewsets.ModelViewSet):
             )
 
         session.print_bill()
-        
+
         # Prepare bill data for printing
         bill_data = generate_receipt_data(session)
 
@@ -323,6 +428,152 @@ class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
+     
+     
+    @action(detail=False, methods=['post'])
+    def admin_bulk_modify(self, request):
+        """Admin bulk modification of orders for a table"""
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+            raise PermissionDenied('Admin or Manager access required')
+        
+        table_id = request.data.get('table_id')
+        modifications = request.data.get('modifications', [])
+        
+        if not table_id or not modifications:
+            return Response(
+                {'error': 'Table ID and modifications are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            table = Table.objects.get(id=table_id, is_active=True)
+            modified_orders = []
+            
+            with transaction.atomic():
+                for mod in modifications:
+                    order_id = mod.get('order_id')
+                    action = mod.get('action')
+                    
+                    try:
+                        order = Order.objects.get(id=order_id, table=table)
+                        
+                        if order.status in ['served', 'cancelled']:
+                            continue  # Skip already completed orders
+                        
+                        if action == 'update_quantity':
+                            new_quantity = mod.get('quantity')
+                            if new_quantity and new_quantity > 0:
+                                order.quantity = new_quantity
+                                order.total_price = order.unit_price * new_quantity
+                                order.admin_notes = f"Bulk update by {request.user.get_full_name()}"
+                                order.save()
+                                modified_orders.append(order)
+                        
+                        elif action == 'cancel':
+                            order.status = 'cancelled'
+                            order.admin_notes = f"Bulk cancelled by {request.user.get_full_name()}"
+                            order.save()
+                            modified_orders.append(order)
+                            
+                    except Order.DoesNotExist:
+                        continue
+                
+                # Broadcast all updates
+                for order in modified_orders:
+                    broadcast_order_update(order, None)
+            
+            return Response({
+                'message': f'Successfully modified {len(modified_orders)} orders',
+                'modified_count': len(modified_orders)
+            })
+            
+        except Table.DoesNotExist:
+            return Response(
+                {'error': 'Table not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.error(f"Error in bulk modification: {e}")
+            return Response(
+                {'error': f'Failed to perform bulk modifications: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    @action(detail=True, methods=['post'])
+    def admin_modify(self, request, pk=None):
+        """Admin functionality to modify existing orders"""
+        order = self.get_object()
+        
+        # Only allow admin and manager access
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+            raise PermissionDenied('Admin or Manager access required')
+        
+        # Don't allow modification of served or cancelled orders
+        if order.status in ['served', 'cancelled']:
+            return Response(
+                {'error': 'Cannot modify served or cancelled orders'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        action_type = request.data.get('action')
+        
+        try:
+            with transaction.atomic():
+                if action_type == 'update_quantity':
+                    new_quantity = request.data.get('quantity')
+                    if not new_quantity or new_quantity <= 0:
+                        return Response(
+                            {'error': 'Valid quantity is required'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    order.quantity = new_quantity
+                    order.total_price = order.unit_price * new_quantity
+                    order.admin_notes = f"Quantity updated by {request.user.get_full_name()} at {timezone.now()}"
+                    order.save()
+                    
+                elif action_type == 'update_instructions':
+                    new_instructions = request.data.get('special_instructions', '')
+                    order.special_instructions = new_instructions
+                    order.admin_notes = f"Instructions updated by {request.user.get_full_name()} at {timezone.now()}"
+                    order.save()
+                    
+                elif action_type == 'update_priority':
+                    new_priority = request.data.get('priority', 'normal')
+                    if new_priority not in dict(Order.PRIORITY_CHOICES):
+                        return Response(
+                            {'error': 'Invalid priority'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    order.priority = new_priority
+                    order.admin_notes = f"Priority updated to {new_priority} by {request.user.get_full_name()} at {timezone.now()}"
+                    order.save()
+                    
+                elif action_type == 'cancel_order':
+                    order.status = 'cancelled'
+                    order.admin_notes = f"Cancelled by {request.user.get_full_name()} at {timezone.now()}"
+                    order.save()
+                    
+                else:
+                    return Response(
+                        {'error': 'Invalid action'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Broadcast the update
+                broadcast_order_update(order, None)
+                
+                return Response({
+                    'message': 'Order updated successfully',
+                    'order': OrderSerializer(order, context={'request': request}).data
+                })
+                
+        except Exception as e:
+            logger.error(f"Error modifying order {order.id}: {e}")
+            return Response(
+                {'error': f'Failed to update order: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
     def get_queryset(self):
         queryset = Order.objects.select_related(
@@ -366,18 +617,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Set source as mobile for waiter orders
         source = 'mobile' if getattr(self.request.user, 'role', None) == 'waiter' else 'dine_in'
         order = serializer.save(created_by=self.request.user, source=source)
-        
+
         # CRITICAL: Always broadcast order update after creation
         try:
             # Broadcast to all connected clients immediately
             broadcast_order_update(order, None)
-            
+
             # Also create backup if KDS is offline
             if not is_kds_connected():
                 create_order_backup(order)
-            
+
             logger.info(f"Order {order.order_number} created and broadcasted successfully")
-            
+
         except Exception as e:
             logger.error(f"Error broadcasting order {order.order_number}: {e}")
             # Don't fail the order creation, just log the error
@@ -429,17 +680,17 @@ class OrderViewSet(viewsets.ModelViewSet):
             # CRITICAL: Broadcast each order individually
             broadcast_success = 0
             kds_connected = is_kds_connected()
-            
+
             for order in orders:
                 try:
                     # Always try to broadcast
                     broadcast_order_update(order, None)
                     broadcast_success += 1
-                    
+
                     # Create backup if KDS offline
                     if not kds_connected:
                         create_order_backup(order)
-                        
+
                 except Exception as e:
                     logger.error(f"Error broadcasting order {order.order_number}: {e}")
 
@@ -454,40 +705,40 @@ class OrderViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
+    
     @action(detail=True, methods=['post'])
     def modify_order(self, request, pk=None):
         """Admin functionality to modify existing orders"""
         order = self.get_object()
-        
+
         # Only allow modification of certain statuses
         if order.status in ['served', 'cancelled']:
             return Response(
                 {'error': 'Cannot modify served or cancelled orders'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Update order details
         new_quantity = request.data.get('quantity')
         new_instructions = request.data.get('special_instructions')
         new_priority = request.data.get('priority')
-        
+
         if new_quantity and new_quantity > 0:
             order.quantity = new_quantity
             order.total_price = order.unit_price * new_quantity
-        
+
         if new_instructions is not None:
             order.special_instructions = new_instructions
-            
+
         if new_priority and new_priority in dict(Order.PRIORITY_CHOICES):
             order.priority = new_priority
-        
+
         order.admin_notes = f"Modified by {request.user.get_full_name()} at {timezone.now()}"
         order.save()
-        
+
         # Broadcast update
         broadcast_order_update(order, None)
-        
+
         return Response({
             'message': 'Order modified successfully',
             'order': OrderSerializer(order, context={'request': request}).data
@@ -497,21 +748,21 @@ class OrderViewSet(viewsets.ModelViewSet):
     def cancel_order(self, request, pk=None):
         """Admin functionality to cancel orders"""
         order = self.get_object()
-        
+
         if order.status == 'served':
             return Response(
                 {'error': 'Cannot cancel served orders'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         old_status = order.status
         order.status = 'cancelled'
         order.admin_notes = f"Cancelled by {request.user.get_full_name()} at {timezone.now()}"
         order.save()
-        
+
         # Broadcast cancellation
         broadcast_order_update(order, old_status)
-        
+
         return Response({
             'message': 'Order cancelled successfully'
         })
@@ -524,17 +775,17 @@ class OrderSessionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = OrderSession.objects.select_related('table', 'created_by', 'billed_by')
-        
+
         # Filter by active status
         is_active = self.request.query_params.get('is_active')
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == 'true')
-        
+
         # Filter by table
         table = self.request.query_params.get('table')
         if table:
             queryset = queryset.filter(table_id=table)
-        
+
         return queryset.order_by('-created_at')
 
     def get_serializer_class(self):
@@ -555,7 +806,7 @@ class KitchenDisplaySettingsViewSet(viewsets.ModelViewSet):
 class EnhancedBillingViewSet(viewsets.ViewSet):
     """Enhanced billing functionality for frontend compatibility"""
     permission_classes = [IsAuthenticated]
-    
+
     def get_permissions(self):
         """Only admin, staff and managers can access billing"""
         if hasattr(self.request, 'user') and self.request.user.is_authenticated:
@@ -571,16 +822,16 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
             tables = Table.objects.filter(
                 Q(status='occupied') | Q(orders__status__in=['pending', 'confirmed', 'preparing', 'ready', 'served'])
             ).distinct().select_related().prefetch_related('orders__menu_item')
-            
+
             active_tables_data = []
             for table in tables:
                 # Get active orders
                 active_orders = table.get_active_orders()
                 session_orders = table.get_session_orders()
-                
+
                 # Calculate subtotal
                 subtotal = sum(order.total_price for order in session_orders)
-                
+
                 table_data = {
                     'table_id': table.id,
                     'table_number': table.table_number,
@@ -610,12 +861,12 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                     ]
                 }
                 active_tables_data.append(table_data)
-            
+
             return Response({
                 'active_tables': active_tables_data,
                 'total_count': len(active_tables_data)
             })
-            
+
         except Exception as e:
             logger.error(f"Error in active_tables_dashboard: {e}")
             return Response(
@@ -633,19 +884,19 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
             interstate = request.data.get('interstate', False)
             discount_percent = request.data.get('discount_percent', 0)
             discount_amount = request.data.get('discount_amount', 0)
-            
+
             table = Table.objects.get(id=table_id)
-            
+
             # Get session orders
             session_orders = table.get_session_orders()
             subtotal = sum(order.total_price for order in session_orders)
-            
+
             # Apply discount
             if discount_percent > 0:
                 discount_amount = subtotal * (discount_percent / 100)
-            
+
             taxable_amount = subtotal - Decimal(str(discount_amount))
-            
+
             # Calculate GST
             gst_breakdown = {
                 'total_gst_amount': 0,
@@ -656,7 +907,7 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                 'sgst_rate': 0,
                 'gst_rate': gst_rate * 100
             }
-            
+
             if apply_gst:
                 gst_calculation = calculate_gst_breakdown(taxable_amount, gst_rate, interstate)
                 if interstate:
@@ -674,9 +925,9 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                         'sgst_rate': gst_calculation['gst_rate'] / 2,
                         'gst_rate': gst_calculation['gst_rate']
                     })
-            
+
             total_amount = taxable_amount + Decimal(str(gst_breakdown['total_gst_amount']))
-            
+
             bill_breakdown = {
                 'table_number': table.table_number,
                 'item_count': session_orders.count(),
@@ -689,11 +940,11 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                 'total_savings': float(discount_amount),
                 **gst_breakdown
             }
-            
+
             return Response({
                 'bill_breakdown': bill_breakdown
             })
-            
+
         except Exception as e:
             logger.error(f"Error calculating bill: {e}")
             return Response(
@@ -709,9 +960,9 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
             customer_name = request.data.get('customer_name', 'Guest')
             customer_phone = request.data.get('customer_phone', '')
             payment_method = request.data.get('payment_method', 'cash')
-            
+
             table = Table.objects.get(id=table_id)
-            
+
             # Get or create session
             session = table.order_sessions.filter(is_active=True).first()
             if not session:
@@ -719,18 +970,18 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                     table=table,
                     created_by=request.user
                 )
-            
+
             # Apply GST settings from request
             apply_gst = request.data.get('apply_gst', True)
             gst_rate = request.data.get('gst_rate', 18) / 100
             discount_percent = request.data.get('discount_percent', 0)
             discount_amount = request.data.get('discount_amount', 0)
-            
+
             # Update session with billing details
             session.discount_percentage = Decimal(str(discount_percent))
             session.discount_amount = Decimal(str(discount_amount))
             session.payment_method = payment_method
-            
+
             # Generate complete bill
             receipt_data = generate_complete_bill(
                 session,
@@ -738,10 +989,10 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                 customer_name=customer_name,
                 customer_phone=customer_phone
             )
-            
+
             # Free the table
             table.mark_free()
-            
+
             return Response({
                 'message': 'Bill generated successfully',
                 'bill': {
@@ -756,7 +1007,7 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
                 'table_freed': True,
                 'receipt_data': receipt_data
             })
-            
+
         except Exception as e:
             logger.error(f"Error generating final bill: {e}")
             return Response(
@@ -789,7 +1040,7 @@ def dashboard_stats(request):
             completed_at__gte=today,
             is_active=False
         )
-        
+
         todays_revenue = todays_sessions.aggregate(
             total=Sum('final_amount')
         )['total'] or Decimal('0.00')
@@ -850,13 +1101,13 @@ def menu_for_ordering(request):
     """Get menu optimized for ordering interface"""
     categories = MenuCategory.objects.filter(is_active=True).prefetch_related('items')
     menu_data = []
-    
+
     for category in categories:
         available_items = category.items.filter(
-            is_active=True, 
+            is_active=True,
             availability='available'
         ).order_by('display_order', 'name')
-        
+
         if available_items.exists():
             menu_data.append({
                 'id': category.id,
@@ -865,7 +1116,7 @@ def menu_for_ordering(request):
                 'icon': category.icon,
                 'items': MenuItemSerializer(available_items, many=True).data
             })
-    
+
     return Response(menu_data)
 
 @api_view(['POST'])
@@ -912,7 +1163,7 @@ def quick_order(request):
 def kds_connection_status(request):
     """Get KDS connection status"""
     offline_orders_count = OfflineOrderBackup.objects.filter(is_processed=False).count()
-    
+
     return Response({
         'connected': is_kds_connected(),
         'offline_orders_count': offline_orders_count,
@@ -951,17 +1202,17 @@ def export_orders_csv(request):
     """Export orders to CSV"""
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename="orders.csv"'
-    
+
     writer = csv.writer(response)
     writer.writerow([
-        'Order Number', 'Table', 'Item', 'Quantity', 'Unit Price', 
+        'Order Number', 'Table', 'Item', 'Quantity', 'Unit Price',
         'Total Price', 'Status', 'Created At', 'Created By'
     ])
-    
+
     orders = Order.objects.select_related(
         'table', 'menu_item', 'created_by'
     ).order_by('-created_at')
-    
+
     for order in orders:
         writer.writerow([
             order.order_number,
@@ -974,5 +1225,6 @@ def export_orders_csv(request):
             order.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             order.created_by.get_full_name() if order.created_by else 'System'
         ])
-    
+
     return response
+
