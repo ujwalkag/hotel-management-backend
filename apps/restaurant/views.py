@@ -27,7 +27,7 @@ from .serializers import (
 from .utils import (
     broadcast_order_update, broadcast_table_update, is_kds_connected,
     create_order_backup, process_offline_orders, generate_receipt_data,
-    get_system_health, validate_table_operations, get_order_status_history,
+    get_system_health, 
     generate_complete_bill, calculate_gst_breakdown, increment_kds_connections,
     decrement_kds_connections, update_kds_heartbeat
 )
@@ -230,10 +230,11 @@ class TableViewSet(viewsets.ModelViewSet):
         response_data['order_count'] = orders.count()
 
         return Response(response_data)
+        
 
     @action(detail=True, methods=['post'])
     def complete_billing(self, request, pk=None):
-        """Complete billing with enhanced admin features - FIXED"""
+        """FIXED: Complete billing with enhanced admin features"""
         table = self.get_object()
 
         # Get or create active session
@@ -263,7 +264,11 @@ class TableViewSet(viewsets.ModelViewSet):
             session.payment_method = payment_method
             session.notes = notes
             session.admin_notes = admin_notes
-            
+        
+            # CRITICAL FIX: Generate receipt_number if missing
+            if not session.receipt_number:
+                session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
+        
             # Calculate totals and complete session
             final_amount = session.calculate_totals()
             session.complete_session(request.user)
@@ -278,7 +283,7 @@ class TableViewSet(viewsets.ModelViewSet):
                 'table_status': table.status,
                 'session_data': OrderSessionSerializer(session).data
             })
-            
+        
         except Exception as e:
             logger.error(f"Error completing billing for table {table.table_number}: {e}")
             return Response(

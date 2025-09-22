@@ -1,4 +1,4 @@
-# apps/restaurant/utils.py - COMPLETE Enhanced utility functions with ALL fixes
+# apps/restaurant/utils.py - COMPLETE FIXED VERSION
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from django.utils import timezone
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
 
 def broadcast_order_update(order, old_status=None):
-    """Enhanced broadcast order updates with offline handling - FIXED GROUP NAMES"""
+    """FIXED: Use correct group names that match consumers.py exactly"""
     try:
         from .serializers import OrderKDSSerializer, OrderSerializer
 
@@ -37,10 +37,11 @@ def broadcast_order_update(order, old_status=None):
         }, timeout=3600)  # 1 hour
 
         if channel_layer:
-            # FIXED: Correct group names matching consumers.py
+            # FIXED: Use correct group names that match consumers.py exactly
+            
             # Broadcast to Kitchen Display System
             async_to_sync(channel_layer.group_send)(
-                'kds_kitchen_display',  # FIXED: Matches consumers.py
+                'kds_kitchen_display',  # MATCHES: consumers.py KitchenDisplayConsumer
                 {
                     'type': 'new_order_notification' if update_type == 'new_order' else 'order_status_updated',
                     'order': kds_data,
@@ -54,7 +55,7 @@ def broadcast_order_update(order, old_status=None):
 
             # Broadcast to ordering interface
             async_to_sync(channel_layer.group_send)(
-                'ordering_ordering',  # FIXED: Matches consumers.py
+                'ordering_ordering',  # MATCHES: consumers.py OrderingConsumer
                 {
                     'type': 'order_confirmed',
                     'order_id': str(order.id),
@@ -66,7 +67,7 @@ def broadcast_order_update(order, old_status=None):
 
             # Broadcast to table management
             async_to_sync(channel_layer.group_send)(
-                'table_mgmt_table_management',  # FIXED: Matches consumers.py
+                'table_mgmt_table_management',  # MATCHES: consumers.py TableManagementConsumer
                 {
                     'type': 'new_order_placed',
                     'table_id': str(order.table.id),
@@ -75,13 +76,13 @@ def broadcast_order_update(order, old_status=None):
                 }
             )
 
-        logger.info(f"Broadcasted order update: {order.order_number} - {update_type}")
+        logger.info(f"✅ Successfully broadcasted order update: {order.order_number} - {update_type}")
 
     except Exception as e:
-        logger.error(f"Error broadcasting order update: {e}")
+        logger.error(f"❌ Error broadcasting order update: {e}")
 
 def broadcast_table_update(table, old_status=None):
-    """Enhanced broadcast table status updates - FIXED"""
+    """FIXED: Broadcast table status updates with correct group names"""
     try:
         from .serializers import TableSerializer
         table_data = TableSerializer(table).data
@@ -99,7 +100,7 @@ def broadcast_table_update(table, old_status=None):
             # FIXED: Broadcast to all relevant channels with correct names
             channels = [
                 'kds_kitchen_display',
-                'ordering_ordering',
+                'ordering_ordering', 
                 'table_mgmt_table_management'
             ]
 
@@ -116,10 +117,10 @@ def broadcast_table_update(table, old_status=None):
                     }
                 )
 
-        logger.info(f"Broadcasted table update: {table.table_number} - {old_status} -> {table.status}")
+        logger.info(f"✅ Successfully broadcasted table update: {table.table_number} - {old_status} -> {table.status}")
 
     except Exception as e:
-        logger.error(f"Error broadcasting table update: {e}")
+        logger.error(f"❌ Error broadcasting table update: {e}")
 
 # FIXED: KDS connection management with proper increment/decrement
 def is_kds_connected():
@@ -171,10 +172,10 @@ def create_order_backup(order):
             table_number=order.table.table_number
         )
         
-        logger.info(f"Created offline backup for order: {order.order_number}")
+        logger.info(f"✅ Created offline backup for order: {order.order_number}")
         
     except Exception as e:
-        logger.error(f"Error creating order backup: {e}")
+        logger.error(f"❌ Error creating order backup: {e}")
 
 def process_offline_orders():
     """Process orders that were created when KDS was offline"""
@@ -212,21 +213,26 @@ def process_offline_orders():
                     processed_count += 1
                 
             except Exception as e:
-                logger.error(f"Error processing offline order {backup.id}: {e}")
+                logger.error(f"❌ Error processing offline order {backup.id}: {e}")
         
-        logger.info(f"Processed {processed_count} offline orders")
+        logger.info(f"✅ Processed {processed_count} offline orders")
         return processed_count
         
     except Exception as e:
-        logger.error(f"Error processing offline orders: {e}")
+        logger.error(f"❌ Error processing offline orders: {e}")
         return 0
 
 def generate_receipt_data(session):
-    """Generate receipt data for printing - ENHANCED"""
+    """FIXED: Generate receipt data for printing with proper error handling"""
     try:
         from django.conf import settings
         
         orders = session.get_session_orders()
+        
+        # FIXED: Ensure receipt_number exists
+        if not session.receipt_number:
+            session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
+            session.save()
         
         receipt_data = {
             'restaurant_info': {
@@ -274,11 +280,11 @@ def generate_receipt_data(session):
         return receipt_data
         
     except Exception as e:
-        logger.error(f"Error generating receipt data: {e}")
+        logger.error(f"❌ Error generating receipt data: {e}")
         return None
 
 def generate_complete_bill(session, payment_method='cash', customer_name='Guest', customer_phone=''):
-    """Generate complete bill with GST and all details"""
+    """FIXED: Generate complete bill with GST and all details"""
     try:
         # Calculate totals
         session.calculate_totals()
@@ -301,7 +307,7 @@ def generate_complete_bill(session, payment_method='cash', customer_name='Guest'
         return receipt_data
         
     except Exception as e:
-        logger.error(f"Error generating complete bill: {e}")
+        logger.error(f"❌ Error generating complete bill: {e}")
         return None
 
 def calculate_gst_breakdown(amount, gst_rate=0.18, interstate=False):
@@ -330,9 +336,9 @@ def calculate_gst_breakdown(amount, gst_rate=0.18, interstate=False):
                 'gst_rate': float(gst_rate * 100),
                 'interstate': False
             }
-            
+        
     except Exception as e:
-        logger.error(f"Error calculating GST: {e}")
+        logger.error(f"❌ Error calculating GST: {e}")
         return {
             'total_gst': 0.0,
             'igst': 0.0,
@@ -374,147 +380,12 @@ def get_system_health():
         return health_data
         
     except Exception as e:
-        logger.error(f"Error getting system health: {e}")
+        logger.error(f"❌ Error getting system health: {e}")
         return {
             'status': 'error',
             'message': str(e),
             'timestamp': timezone.now().isoformat()
         }
-
-def validate_table_operations(table, operation):
-    """Validate table operations based on current state"""
-    try:
-        validations = {
-            'occupy': {
-                'allowed_statuses': ['free', 'reserved'],
-                'message': 'Table must be free or reserved to occupy'
-            },
-            'free': {
-                'allowed_statuses': ['occupied', 'cleaning'],
-                'message': 'Can only free occupied or cleaning tables'
-            },
-            'reserve': {
-                'allowed_statuses': ['free'],
-                'message': 'Can only reserve free tables'
-            },
-            'clean': {
-                'allowed_statuses': ['free'],
-                'message': 'Can only clean free tables'
-            },
-            'maintenance': {
-                'allowed_statuses': ['free', 'cleaning'],
-                'message': 'Can only put free or cleaning tables under maintenance'
-            },
-            'delete': {
-                'allowed_statuses': ['free'],
-                'additional_checks': lambda t: t.get_active_orders().count() == 0,
-                'message': 'Can only delete free tables with no active orders'
-            }
-        }
-        
-        validation = validations.get(operation)
-        if not validation:
-            return False, 'Unknown operation'
-        
-        if table.status not in validation['allowed_statuses']:
-            return False, validation['message']
-        
-        # Additional checks if specified
-        if 'additional_checks' in validation:
-            if not validation['additional_checks'](table):
-                return False, validation['message']
-        
-        return True, 'Operation allowed'
-        
-    except Exception as e:
-        logger.error(f"Error validating table operation: {e}")
-        return False, 'Validation error'
-
-def get_order_status_history(order):
-    """Get status change history for an order"""
-    try:
-        history = []
-        
-        if order.created_at:
-            history.append({
-                'status': 'pending',
-                'timestamp': order.created_at,
-                'user': order.created_by.get_full_name() if order.created_by else 'System'
-            })
-        
-        if order.confirmed_at:
-            history.append({
-                'status': 'confirmed',
-                'timestamp': order.confirmed_at,
-                'user': order.confirmed_by.get_full_name() if order.confirmed_by else 'System'
-            })
-        
-        if order.preparation_started_at:
-            history.append({
-                'status': 'preparing',
-                'timestamp': order.preparation_started_at,
-                'user': order.prepared_by.get_full_name() if order.prepared_by else 'System'
-            })
-        
-        if order.ready_at:
-            history.append({
-                'status': 'ready',
-                'timestamp': order.ready_at,
-                'user': 'Kitchen'
-            })
-        
-        if order.served_at:
-            history.append({
-                'status': 'served',
-                'timestamp': order.served_at,
-                'user': order.served_by.get_full_name() if order.served_by else 'System'
-            })
-        
-        return history
-        
-    except Exception as e:
-        logger.error(f"Error getting order status history: {e}")
-        return []
-
-def send_notification(notification_type, data, recipients=None):
-    """Send notifications to staff"""
-    try:
-        # This is a placeholder for notification system
-        # You can integrate with email, SMS, or push notification services
-        
-        notification_data = {
-            'type': notification_type,
-            'data': data,
-            'timestamp': timezone.now().isoformat(),
-            'recipients': recipients or []
-        }
-        
-        # Store in cache for now
-        cache_key = f"notification_{timezone.now().timestamp()}"
-        cache.set(cache_key, notification_data, timeout=3600)
-        
-        logger.info(f"Notification sent: {notification_type}")
-        
-    except Exception as e:
-        logger.error(f"Error sending notification: {e}")
-
-def cleanup_old_data():
-    """Cleanup old data periodically"""
-    try:
-        from .models import OfflineOrderBackup
-        
-        # Clean up processed offline orders older than 7 days
-        cutoff_date = timezone.now() - timezone.timedelta(days=7)
-        
-        deleted_count = OfflineOrderBackup.objects.filter(
-            is_processed=True,
-            processed_at__lt=cutoff_date
-        ).delete()[0]
-        
-        logger.info(f"Cleaned up {deleted_count} old offline order backups")
-        
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
 
 # Utility functions for color coding and formatting
 def get_order_priority_color(priority):
