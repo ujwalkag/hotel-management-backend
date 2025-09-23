@@ -94,19 +94,27 @@ class MenuItemViewSet(viewsets.ModelViewSet):
         instance.is_active = False
         instance.save()
 
+# CRITICAL FIX: Update TablesWithOrdersView in views.py
+
 class TablesWithOrdersView(APIView):
-    """Get tables with their active orders"""
+    """Get tables with their active orders - FIXED to include served orders"""
     def get(self, request):
         try:
             tables = Table.objects.filter(is_active=True).prefetch_related(
                 'orders__menu_item'
-            ).annotate(
-                active_orders_count=models.Count('orders', filter=models.Q(orders__status__in=['pending', 'confirmed', 'preparing', 'ready']))
             )
             
             table_data = []
             for table in tables:
-                active_orders = table.orders.filter(status__in=['pending', 'confirmed', 'preparing', 'ready'])
+                # FIXED: Include served orders for billing purposes
+                session_orders = table.get_session_orders()
+                active_orders = table.orders.filter(
+                    status__in=['pending', 'confirmed', 'preparing', 'ready']
+                )
+                
+                # FIXED: A table is billable if it has any session orders (including served)
+                can_bill = session_orders.exists()
+                
                 table_data.append({
                     'id': table.id,
                     'table_number': table.table_number,
@@ -114,6 +122,7 @@ class TablesWithOrdersView(APIView):
                     'status': table.status,
                     'location': table.location,
                     'active_orders_count': active_orders.count(),
+                    'session_orders_count': session_orders.count(),  # NEW: Total billable orders
                     'active_orders': [{
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -123,14 +132,15 @@ class TablesWithOrdersView(APIView):
                         'total_price': float(order.total_price),
                         'created_by_name': order.created_by.get_full_name() if order.created_by else 'System'
                     } for order in active_orders],
-                    'total_bill_amount': float(sum(order.total_price for order in active_orders)),
-                    'time_occupied': table.get_occupied_duration() if table.status == 'occupied' else 0
+                    'total_bill_amount': float(sum(order.total_price for order in session_orders)),
+                    'time_occupied': table.get_occupied_duration() if table.status == 'occupied' else 0,
+                    'can_bill': can_bill,  # NEW: Whether table can be billed
+                    'has_served_orders': session_orders.filter(status='served').exists()  # NEW: Has completed orders
                 })
             
             return Response(table_data)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
-
 class MenuForOrderingView(APIView):
     """Get menu organized for ordering interface"""
     def get(self, request):

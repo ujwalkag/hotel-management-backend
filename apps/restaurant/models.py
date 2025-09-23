@@ -355,11 +355,19 @@ class OrderSession(models.Model):
     def __str__(self):
         return f"Session {self.receipt_number or self.session_id} - Table {self.table.table_number}"
 
+    # CRITICAL FIX: Replace get_session_orders method in Table model
+
     def get_session_orders(self):
-        """Get all orders in this session - FIXED"""
-        return self.table.orders.filter(
-            created_at__gte=self.created_at,
-            created_at__lte=self.completed_at if self.completed_at else timezone.now()
+        """Get orders from current active session - FIXED to include served orders"""
+        active_session = self.order_sessions.filter(is_active=True).first()
+        if active_session:
+            return active_session.get_session_orders()
+    
+        # FIXED: Include 'served' orders for billing - they're completed but billable
+        return self.orders.filter(
+            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+        ).exclude(
+            status='cancelled'  # Only exclude cancelled orders
         ).order_by('created_at')
 
     def calculate_totals(self):
@@ -457,29 +465,26 @@ class OfflineOrderBackup(models.Model):
         ordering = ['created_at']
 
 # Enhanced Signal handlers
+# CRITICAL FIX: Replace your models.py signal handler with this
+
 @receiver(post_save, sender=Order)
 def handle_order_created(sender, instance, created, **kwargs):
-    """Enhanced order creation handler with broadcasting - FIXED"""
+    """FIXED: Only handle table status, not broadcasting (done in views)"""
     if created:
         # Mark table as occupied if it's the first order
         if instance.table.status == 'free':
             instance.table.mark_occupied()
         
-        # Broadcast order immediately after creation
+        # Only create backup if KDS is offline - don't broadcast here
         try:
-            from .utils import broadcast_order_update, is_kds_connected, create_order_backup
+            from .utils import is_kds_connected, create_order_backup
             
-            # Always try to broadcast
-            broadcast_order_update(instance, None)
-            
-            # Create backup if KDS might be offline
             if not is_kds_connected():
                 create_order_backup(instance)
-                
+            
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Error in order signal handler: {e}")
-
 @receiver(post_save, sender=OrderSession)
 def handle_session_completed(sender, instance, **kwargs):
     """Handle session completion with enhanced features"""

@@ -10,6 +10,8 @@ from decimal import Decimal
 logger = logging.getLogger(__name__)
 channel_layer = get_channel_layer()
 
+# CRITICAL FIX: Replace broadcast functions in utils.py with correct group names
+
 def broadcast_order_update(order, old_status=None):
     """FIXED: Use correct group names that match consumers.py exactly"""
     try:
@@ -17,7 +19,6 @@ def broadcast_order_update(order, old_status=None):
 
         # Prepare order data
         kds_data = OrderKDSSerializer(order).data
-        full_data = OrderSerializer(order).data
         timestamp = timezone.now().isoformat()
 
         # Determine update type
@@ -27,14 +28,6 @@ def broadcast_order_update(order, old_status=None):
         else:
             update_type = 'order_updated'
             audio_enabled = False
-
-        # Store in cache for offline clients
-        cache_key = f"order_update_{order.id}_{timestamp}"
-        cache.set(cache_key, {
-            'type': update_type,
-            'order': kds_data,
-            'timestamp': timestamp
-        }, timeout=3600)  # 1 hour
 
         if channel_layer:
             # FIXED: Use correct group names that match consumers.py exactly
@@ -49,18 +42,6 @@ def broadcast_order_update(order, old_status=None):
                     'status': order.status,
                     'old_status': old_status,
                     'audio_enabled': audio_enabled,
-                    'timestamp': timestamp
-                }
-            )
-
-            # Broadcast to ordering interface
-            async_to_sync(channel_layer.group_send)(
-                'ordering_ordering',  # MATCHES: consumers.py OrderingConsumer
-                {
-                    'type': 'order_confirmed',
-                    'order_id': str(order.id),
-                    'table_id': str(order.table.id),
-                    'order_data': full_data,
                     'timestamp': timestamp
                 }
             )
@@ -80,7 +61,6 @@ def broadcast_order_update(order, old_status=None):
 
     except Exception as e:
         logger.error(f"❌ Error broadcasting order update: {e}")
-
 def broadcast_table_update(table, old_status=None):
     """FIXED: Broadcast table status updates with correct group names"""
     try:
