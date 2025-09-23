@@ -104,6 +104,9 @@ class Table(models.Model):
             duration = timezone.now() - self.last_occupied_at
             return int(duration.total_seconds() / 60)
         return 0
+    def get_occupancy_duration(self):
+        """Get current occupancy duration in minutes - ALIAS for serializer compatibility"""
+        return self.get_occupied_duration()
 
     # Add this property for easier access
     @property
