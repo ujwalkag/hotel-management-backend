@@ -237,7 +237,7 @@ class TableSerializer(serializers.ModelSerializer):
         return float(obj.get_total_bill_amount())
     
     def get_occupancy_duration(self, obj):
-        return obj.get_occupancy_duration()
+        return obj.get_occupied_duration()
     
     def get_can_modify(self, obj):
         user = self.context.get('request').user if self.context.get('request') else None

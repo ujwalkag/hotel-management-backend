@@ -96,51 +96,123 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 
 # CRITICAL FIX: Update TablesWithOrdersView in views.py
 
+# CRITICAL FIX 4: Replace TablesWithOrdersView in views.py
+
 class TablesWithOrdersView(APIView):
-    """Get tables with their active orders - FIXED to include served orders"""
+    """Get tables with their active orders - FIXED to include served orders and billing info"""
+    permission_classes = [IsAuthenticated]
+    
     def get(self, request):
         try:
             tables = Table.objects.filter(is_active=True).prefetch_related(
-                'orders__menu_item'
+                'orders__menu_item',
+                'orders__created_by',
+                'order_sessions'
             )
             
             table_data = []
             for table in tables:
-                # FIXED: Include served orders for billing purposes
+                # Get session orders (includes served orders for billing)
                 session_orders = table.get_session_orders()
+                
+                # Get only active orders (for kitchen/display purposes)
                 active_orders = table.orders.filter(
                     status__in=['pending', 'confirmed', 'preparing', 'ready']
                 )
                 
-                # FIXED: A table is billable if it has any session orders (including served)
-                can_bill = session_orders.exists()
+                # Check if table can be billed
+                can_bill = table.can_be_billed()
+                has_served_orders = table.has_served_orders()
                 
-                table_data.append({
-                    'id': table.id,
-                    'table_number': table.table_number,
-                    'capacity': table.capacity,
-                    'status': table.status,
-                    'location': table.location,
-                    'active_orders_count': active_orders.count(),
-                    'session_orders_count': session_orders.count(),  # NEW: Total billable orders
-                    'active_orders': [{
+                # Build active orders data
+                active_orders_data = []
+                for order in active_orders:
+                    try:
+                        created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
+                    except:
+                        created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
+                    
+                    active_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
                         'quantity': order.quantity,
                         'status': order.status,
                         'order_number': order.order_number,
                         'total_price': float(order.total_price),
-                        'created_by_name': order.created_by.get_full_name() if order.created_by else 'System'
-                    } for order in active_orders],
-                    'total_bill_amount': float(sum(order.total_price for order in session_orders)),
-                    'time_occupied': table.get_occupied_duration() if table.status == 'occupied' else 0,
-                    'can_bill': can_bill,  # NEW: Whether table can be billed
-                    'has_served_orders': session_orders.filter(status='served').exists()  # NEW: Has completed orders
+                        'created_by_name': created_by_name,
+                        'special_instructions': order.special_instructions or '',
+                        'priority': order.priority,
+                        'unit_price': float(order.unit_price)
+                    })
+                
+                # Build session orders data for billing
+                session_orders_data = []
+                for order in session_orders:
+                    try:
+                        created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
+                    except:
+                        created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
+                    
+                    session_orders_data.append({
+                        'id': order.id,
+                        'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
+                        'quantity': order.quantity,
+                        'status': order.status,
+                        'order_number': order.order_number,
+                        'total_price': float(order.total_price),
+                        'unit_price': float(order.unit_price),
+                        'created_by_name': created_by_name,
+                        'special_instructions': order.special_instructions or '',
+                        'created_at': order.created_at.isoformat()
+                    })
+                
+                table_data.append({
+                    'id': table.id,
+                    'table_number': table.table_number,
+                    'capacity': table.capacity,
+                    'status': table.status,
+                    'location': table.location or '',
+                    'notes': table.notes or '',
+                    
+                    # Active orders (for display/management)
+                    'active_orders_count': active_orders.count(),
+                    'active_orders': active_orders_data,
+                    
+                    # Session orders (for billing)
+                    'session_orders_count': session_orders.count(),
+                    'session_orders': session_orders_data,
+                    
+                    # Billing information
+                    'total_bill_amount': float(table.get_total_bill_amount()),
+                    'can_bill': can_bill,
+                    'has_served_orders': has_served_orders,
+                    
+                    # Time information
+                    'time_occupied': table.get_occupied_duration(),
+                    'last_occupied_at': table.last_occupied_at.isoformat() if table.last_occupied_at else None,
+                    
+                    # Status flags for frontend
+                    'show_billing_options': can_bill or has_served_orders,
+                    'show_manage_orders': active_orders.count() > 0,
+                    'is_billable': session_orders.count() > 0,
+                    
+                    # Enhanced metadata
+                    'priority_level': getattr(table, 'priority_level', 1),
+                    'created_at': table.created_at.isoformat() if hasattr(table, 'created_at') else None
                 })
             
-            return Response(table_data)
+            return Response({
+                'tables': table_data,
+                'total_tables': len(table_data),
+                'timestamp': timezone.now().isoformat()
+            })
+            
         except Exception as e:
-            return Response({'error': str(e)}, status=500)
+            logger.error(f"Error in TablesWithOrdersView: {e}")
+            return Response({
+                'error': str(e),
+                'tables': []
+            }, status=500)
 class MenuForOrderingView(APIView):
     """Get menu organized for ordering interface"""
     def get(self, request):
@@ -396,7 +468,6 @@ class TableViewSet(viewsets.ModelViewSet):
             table.active_orders = table.get_active_orders()
             table.active_orders_count = table.active_orders.count()
             table.total_bill_amount = table.get_total_bill_amount()
-            table.time_occupied = table.get_occupancy_duration()
 
             # Get active session info
             active_session = table.order_sessions.filter(is_active=True).first()
@@ -535,6 +606,77 @@ class TableViewSet(viewsets.ModelViewSet):
             )
 
     @action(detail=True, methods=['post'])
+    def enhanced_billing(self, request, pk=None):
+        """Enhanced billing with customer details and full order management"""
+        table = self.get_object()
+    
+        # Check permissions
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager', 'staff']:
+            raise PermissionDenied('Billing access required')
+    
+        try:
+            with transaction.atomic():
+                # Get or create active session
+                session = table.order_sessions.filter(is_active=True).first()
+                if not session:
+                    session = OrderSession.objects.create(
+                        table=table,
+                        created_by=request.user
+                    )
+            
+                # Extract billing data
+                customer_name = request.data.get('customer_name', 'Guest')
+                customer_phone = request.data.get('customer_phone', '')
+                payment_method = request.data.get('payment_method', 'cash')
+                discount_amount = request.data.get('discount_amount', 0)
+                discount_percentage = request.data.get('discount_percentage', 0)
+                service_charge = request.data.get('service_charge', 0)
+                notes = request.data.get('notes', '')
+                admin_notes = request.data.get('admin_notes', '')
+            
+                # Update session with billing details
+                session.discount_amount = Decimal(str(discount_amount))
+                session.discount_percentage = Decimal(str(discount_percentage))
+                session.service_charge = Decimal(str(service_charge))
+                session.payment_method = payment_method
+                session.notes = notes
+                session.admin_notes = admin_notes
+            
+                # Calculate final amount with GST
+                final_amount = session.calculate_totals()
+            
+                # Generate receipt number if missing
+                if not session.receipt_number:
+                    session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
+            
+                # Complete the session
+                session.complete_session(request.user)
+            
+                # Free the table
+                table.mark_free()
+            
+                # Broadcast table status update
+                broadcast_table_update(table, 'occupied')
+            
+                return Response({
+                    'message': 'Billing completed successfully',
+                    'receipt_number': session.receipt_number,
+                    'final_amount': float(final_amount),
+                    'customer_name': customer_name,
+                    'customer_phone': customer_phone,
+                    'table_number': table.table_number,
+                    'table_status': table.status,
+                    'payment_method': payment_method,
+                    'session_data': OrderSessionSerializer(session).data
+                })
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced billing for table {table.table_number}: {e}")
+            return Response(
+                {'error': f'Failed to complete billing: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+         )
+    @action(detail=True, methods=['post'])
     def print_bill(self, request, pk=None):
         """Mark bill as printed and return print-ready data"""
         table = self.get_object()
@@ -638,7 +780,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
     @action(detail=True, methods=['post'])
     def admin_modify(self, request, pk=None):
-        """Admin functionality to modify existing orders"""
+        """Admin functionality to modify existing orders - FIXED"""
         order = self.get_object()
 
         # Only allow admin and manager access
@@ -666,13 +808,16 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     order.quantity = new_quantity
                     order.total_price = order.unit_price * new_quantity
-                    order.admin_notes = f"Quantity updated by {request.user.get_full_name()} at {timezone.now()}"
+                    # FIXED: Use safe get_full_name method
+                    user_name = getattr(request.user, 'get_full_name', lambda: request.user.username)()
+                    order.admin_notes = f"Quantity updated by {user_name} at {timezone.now()}"
                     order.save()
 
                 elif action_type == 'update_instructions':
                     new_instructions = request.data.get('special_instructions', '')
                     order.special_instructions = new_instructions
-                    order.admin_notes = f"Instructions updated by {request.user.get_full_name()} at {timezone.now()}"
+                    user_name = getattr(request.user, 'get_full_name', lambda: request.user.username)()
+                    order.admin_notes = f"Instructions updated by {user_name} at {timezone.now()}"
                     order.save()
 
                 elif action_type == 'update_priority':
@@ -683,12 +828,14 @@ class OrderViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST
                         )
                     order.priority = new_priority
-                    order.admin_notes = f"Priority updated to {new_priority} by {request.user.get_full_name()} at {timezone.now()}"
+                    user_name = getattr(request.user, 'get_full_name', lambda: request.user.username)()
+                    order.admin_notes = f"Priority updated to {new_priority} by {user_name} at {timezone.now()}"
                     order.save()
 
                 elif action_type == 'cancel_order':
                     order.status = 'cancelled'
-                    order.admin_notes = f"Cancelled by {request.user.get_full_name()} at {timezone.now()}"
+                    user_name = getattr(request.user, 'get_full_name', lambda: request.user.username)()
+                    order.admin_notes = f"Cancelled by {user_name} at {timezone.now()}"
                     order.save()
 
                 else:
@@ -711,7 +858,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {'error': f'Failed to update order: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
     def get_queryset(self):
         queryset = Order.objects.select_related(

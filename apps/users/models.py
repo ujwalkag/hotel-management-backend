@@ -17,7 +17,7 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault("is_superuser", True)
         return self.create_user(email, password, role="admin", **extra_fields)
 
-
+    
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = (
         ('admin', 'Admin'),
@@ -39,7 +39,24 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS = []
 
     objects = CustomUserManager()
-
+    def get_full_name(self):
+        """
+        Return the first_name plus last_name, separated by a space.
+        Falls back to username or email if names are missing.
+        """
+        if self.first_name and self.last_name:
+            return f"{self.first_name} {self.last_name}".strip()
+        if self.first_name:
+            return self.first_name
+        if self.last_name:
+            return self.last_name
+        return self.username or self.email or ""
+    def get_short_name(self):
+        """Return the short name for the user."""
+        return self.first_name or self.username
+    
+    def __str__(self):
+        return self.get_full_name() or self.username    
     def save(self, *args, **kwargs):
         # Auto-assign permissions based on role
         if self.role == 'admin':
