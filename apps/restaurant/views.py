@@ -1,4 +1,5 @@
 
+
 # apps/restaurant/views.py - COMPLETE Enhanced Views with ALL Functionality + Your Updates
 from rest_framework.views import APIView
 from rest_framework import viewsets, status
@@ -187,7 +188,7 @@ class TablesWithOrdersView(APIView):
                     # Billing information
                     'total_bill_amount': float(table.get_total_bill_amount()),
                     'can_bill': session_orders.count() > 0,
-                    'has_served_orders': session_orders.filter(status='served').count() > 0,
+                    'has_served_orders': any(order.status == 'served' for order in session_orders),
 
                     # Time information
                     'time_occupied': table.get_occupied_duration(),
