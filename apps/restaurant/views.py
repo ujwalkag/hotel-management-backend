@@ -102,7 +102,7 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 class TablesWithOrdersView(APIView):
     """Get tables with their active orders - FIXED to include served orders and billing info"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         try:
             tables = Table.objects.filter(is_active=True).prefetch_related(
@@ -110,21 +110,21 @@ class TablesWithOrdersView(APIView):
                 'orders__created_by',
                 'order_sessions'
             )
-            
+
             table_data = []
             for table in tables:
                 # Get session orders (includes served orders for billing)
                 session_orders = table.get_session_orders()
-                
+
                 # Get only active orders (for kitchen/display purposes)
                 active_orders = table.orders.filter(
                     status__in=['pending', 'confirmed', 'preparing', 'ready']
                 )
-                
+
                 # Check if table can be billed
                 can_bill = table.can_be_billed()
                 has_served_orders = table.has_served_orders()
-                
+
                 # Build active orders data
                 active_orders_data = []
                 for order in active_orders:
@@ -132,7 +132,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-                    
+
                     active_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -145,7 +145,7 @@ class TablesWithOrdersView(APIView):
                         'priority': order.priority,
                         'unit_price': float(order.unit_price)
                     })
-                
+
                 # Build session orders data for billing
                 session_orders_data = []
                 for order in session_orders:
@@ -153,7 +153,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-                    
+
                     session_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -166,7 +166,7 @@ class TablesWithOrdersView(APIView):
                         'special_instructions': order.special_instructions or '',
                         'created_at': order.created_at.isoformat()
                     })
-                
+
                 table_data.append({
                     'id': table.id,
                     'table_number': table.table_number,
@@ -174,40 +174,40 @@ class TablesWithOrdersView(APIView):
                     'status': table.status,
                     'location': table.location or '',
                     'notes': table.notes or '',
-                    
+
                     # Active orders (for display/management)
                     'active_orders_count': active_orders.count(),
                     'active_orders': active_orders_data,
-                    
+
                     # Session orders (for billing)
                     'session_orders_count': session_orders.count(),
                     'session_orders': session_orders_data,
-                    
+
                     # Billing information
                     'total_bill_amount': float(table.get_total_bill_amount()),
                     'can_bill': can_bill,
                     'has_served_orders': has_served_orders,
-                    
+
                     # Time information
                     'time_occupied': table.get_occupied_duration(),
                     'last_occupied_at': table.last_occupied_at.isoformat() if table.last_occupied_at else None,
-                    
+
                     # Status flags for frontend
                     'show_billing_options': can_bill or has_served_orders,
                     'show_manage_orders': active_orders.count() > 0,
                     'is_billable': session_orders.count() > 0,
-                    
+
                     # Enhanced metadata
                     'priority_level': getattr(table, 'priority_level', 1),
                     'created_at': table.created_at.isoformat() if hasattr(table, 'created_at') else None
                 })
-            
+
             return Response({
                 'tables': table_data,
                 'total_tables': len(table_data),
                 'timestamp': timezone.now().isoformat()
             })
-            
+
         except Exception as e:
             logger.error(f"Error in TablesWithOrdersView: {e}")
             return Response({
@@ -219,14 +219,14 @@ class MenuForOrderingView(APIView):
     def get(self, request):
         try:
             from .models import MenuCategory, MenuItem
-            
+
             categories = MenuCategory.objects.filter(is_active=True).prefetch_related(
                 models.Prefetch(
                     'items',
                     queryset=MenuItem.objects.filter(is_active=True, availability='available')
                 )
             )
-            
+
             menu_data = []
             for category in categories:
                 items = category.items.all()
@@ -251,7 +251,7 @@ class MenuForOrderingView(APIView):
                             'image': item.image.url if item.image else None
                         } for item in items]
                     })
-            
+
             return Response(menu_data)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
@@ -262,17 +262,17 @@ class DashboardStatsView(APIView):
         try:
             from django.utils import timezone
             from datetime import datetime, timedelta
-            
+
             today = timezone.now().date()
-            
+
             # Table stats
             total_tables = Table.objects.filter(is_active=True).count()
             free_tables = Table.objects.filter(is_active=True, status='free').count()
             occupied_tables = Table.objects.filter(is_active=True, status='occupied').count()
-            
+
             # Order stats
             preparing_orders = Order.objects.filter(status='preparing').count()
-            
+
             # Revenue stats (you might need to adjust based on your billing model)
             try:
                 from apps.bills.models import Bill
@@ -283,7 +283,7 @@ class DashboardStatsView(APIView):
                 )['total'] or 0
             except:
                 today_revenue = 0
-            
+
             return Response({
                 'tables': {
                     'total': total_tables,
@@ -321,7 +321,30 @@ class TableViewSet(viewsets.ModelViewSet):
 
         if request.method == 'GET':
             # Get all orders for this table
-            session_orders = table.get_session_orders()
+            today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Check if table has an active billing session
+            active_session = table.order_sessions.filter(is_active=True).first()
+            if active_session:
+                # Get orders from active session start time
+                session_orders = table.orders.filter(
+                    created_at__gte=active_session.created_at,
+                    status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+                ).exclude(
+                    status='cancelled'  # Only exclude cancelled orders
+                ).order_by('created_at')
+            else:
+                # Get today's orders that haven't been billed
+                session_orders = table.orders.filter(
+                    created_at__gte=today,
+                    status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+                ).exclude(
+                    status='cancelled'
+                ).order_by('created_at')
+
+            # Calculate total including served orders
+            total_amount = sum(order.total_price for order in session_orders)
+                        
+            #session_orders = table.get_session_orders()
             orders_data = []
 
             for order in session_orders:
@@ -613,11 +636,11 @@ class TableViewSet(viewsets.ModelViewSet):
     def enhanced_billing(self, request, pk=None):
         """Enhanced billing with customer details and full order management"""
         table = self.get_object()
-    
+
         # Check permissions
         if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager', 'staff']:
             raise PermissionDenied('Billing access required')
-    
+
         try:
             with transaction.atomic():
                 # Get or create active session
@@ -627,7 +650,7 @@ class TableViewSet(viewsets.ModelViewSet):
                         table=table,
                         created_by=request.user
                     )
-            
+
                 # Extract billing data
                 customer_name = request.data.get('customer_name', 'Guest')
                 customer_phone = request.data.get('customer_phone', '')
@@ -637,7 +660,7 @@ class TableViewSet(viewsets.ModelViewSet):
                 service_charge = request.data.get('service_charge', 0)
                 notes = request.data.get('notes', '')
                 admin_notes = request.data.get('admin_notes', '')
-            
+
                 # Update session with billing details
                 session.discount_amount = Decimal(str(discount_amount))
                 session.discount_percentage = Decimal(str(discount_percentage))
@@ -645,23 +668,23 @@ class TableViewSet(viewsets.ModelViewSet):
                 session.payment_method = payment_method
                 session.notes = notes
                 session.admin_notes = admin_notes
-            
+
                 # Calculate final amount with GST
                 final_amount = session.calculate_totals()
-            
+
                 # Generate receipt number if missing
                 if not session.receipt_number:
                     session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
-            
+
                 # Complete the session
                 session.complete_session(request.user)
-            
+
                 # Free the table
                 table.mark_free()
-            
+
                 # Broadcast table status update
                 broadcast_table_update(table, 'occupied')
-            
+
                 return Response({
                     'message': 'Billing completed successfully',
                     'receipt_number': session.receipt_number,
@@ -673,7 +696,7 @@ class TableViewSet(viewsets.ModelViewSet):
                     'payment_method': payment_method,
                     'session_data': OrderSessionSerializer(session).data
                 })
-            
+
         except Exception as e:
             logger.error(f"Error in enhanced billing for table {table.table_number}: {e}")
             return Response(
@@ -1515,5 +1538,3 @@ def export_orders_csv(request):
         ])
 
     return response
-
-

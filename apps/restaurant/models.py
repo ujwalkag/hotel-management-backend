@@ -1,3 +1,4 @@
+
 # apps/restaurant/models.py - COMPLETE Enhanced Kitchen Display System Models with ALL FIXES INTEGRATED
 from django.db import models
 from apps.users.models import CustomUser
@@ -74,15 +75,16 @@ class Table(models.Model):
         """Get orders from current active session - FIXED to include served orders for billing"""
         active_session = self.order_sessions.filter(is_active=True).first()
         if active_session:
-            return active_session.get_session_orders()
-
-        # FIXED: Include 'served' orders for billing - they're completed but billable
+            return self.orders.filter(
+                created_at__gte=active_session.created_at,
+                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+            ).exclude(status='cancelled').order_by('created_at')
+        today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        
         return self.orders.filter(
-            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
-        ).exclude(
-            status='cancelled'  # Only exclude cancelled orders
-        ).order_by('created_at')
-
+            created_at__gte=today,
+            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+        ).exclude(status='cancelled').order_by('created_at')
     def get_total_bill_amount(self):
         """Calculate total bill amount for session orders - ENHANCED"""
         session_orders = self.get_session_orders()
@@ -257,8 +259,25 @@ class Order(models.Model):
             self.estimated_ready_time = timezone.now() + timezone.timedelta(
                 minutes=self.estimated_preparation_time or 15
             )
-
-        super().save(*args, **kwargs)
+            
+            
+        # FIXED: Auto-create order session when first order is placed
+        if not self.pk:  # Only for new orders
+            # Check if table has active session
+            if not self.table.order_sessions.filter(is_active=True).exists():
+                # Create new billing session
+                from .models import OrderSession
+                OrderSession.objects.create(
+                    table=self.table,
+                    created_by=self.created_by,
+                    is_active=True
+                )
+            
+            # Mark table as occupied
+            if self.table.status == 'free':
+                self.table.mark_occupied()
+        
+        super().save(*args, **kwargs)    
 
     def __str__(self):
         return f"{self.order_number} - {self.table.table_number} - {self.menu_item.name}"
@@ -507,3 +526,5 @@ def handle_session_completed(sender, instance, **kwargs):
             broadcast_table_update(instance.table, 'occupied')
         except Exception:
             pass
+
+
