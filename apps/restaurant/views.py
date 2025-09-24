@@ -14,6 +14,7 @@ import logging
 from django.db import transaction
 import json
 import csv
+import uuid
 
 from .models import (
     Table, MenuCategory, MenuItem, Order, OrderSession,
@@ -580,8 +581,11 @@ class TableViewSet(viewsets.ModelViewSet):
             session.admin_notes = admin_notes
 
             # CRITICAL FIX: Generate receipt_number if missing
+            #if not session.receipt_number:
+            #   session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
             if not session.receipt_number:
-                session.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{str(session.session_id)[:8].upper()}"
+                short_id = str(uuid.uuid4())[:8].upper()
+                session.receipt_number = f"R{timezone.now().strftime('%y%m%d')}{short_id}"
 
             # Calculate totals and complete session
             final_amount = session.calculate_totals()

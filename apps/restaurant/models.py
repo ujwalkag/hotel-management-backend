@@ -197,7 +197,7 @@ class Order(models.Model):
 
     # Order identification
     order_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    order_number = models.CharField(max_length=20, unique=True, blank=True)
+    order_number = models.CharField(max_length=50, unique=True, blank=True)
 
     # Order details
     table = models.ForeignKey(Table, on_delete=models.CASCADE, related_name='orders')
@@ -363,7 +363,7 @@ class OrderSession(models.Model):
     # Admin and operational
     notes = models.TextField(blank=True)
     admin_notes = models.TextField(blank=True, help_text='Admin notes for billing')
-    receipt_number = models.CharField(max_length=20, blank=True)
+    receipt_number = models.CharField(max_length=50, blank=True)
     printed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
