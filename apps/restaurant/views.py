@@ -1,3 +1,4 @@
+
 # apps/restaurant/views.py - COMPLETE Enhanced Views with ALL Functionality + Your Updates
 from rest_framework.views import APIView
 from rest_framework import viewsets, status
@@ -185,13 +186,17 @@ class TablesWithOrdersView(APIView):
 
                     # Billing information
                     'total_bill_amount': float(table.get_total_bill_amount()),
-                    'can_bill': can_bill,
-                    'has_served_orders': has_served_orders,
+                    'can_bill': session_orders.count() > 0,
+                    'has_served_orders': session_orders.filter(status='served').count() > 0,
 
                     # Time information
                     'time_occupied': table.get_occupied_duration(),
                     'last_occupied_at': table.last_occupied_at.isoformat() if table.last_occupied_at else None,
 
+                    # EXPLICIT FLAGS FOR FRONTEND
+                    'has_billing_data': session_orders.count() > 0,
+                    'billing_ready': session_orders.count() > 0,
+                    'show_bill_button': session_orders.count() > 0,
                     # Status flags for frontend
                     'show_billing_options': can_bill or has_served_orders,
                     'show_manage_orders': active_orders.count() > 0,
@@ -343,7 +348,7 @@ class TableViewSet(viewsets.ModelViewSet):
 
             # Calculate total including served orders
             total_amount = sum(order.total_price for order in session_orders)
-                        
+
             #session_orders = table.get_session_orders()
             orders_data = []
 
@@ -1538,3 +1543,5 @@ def export_orders_csv(request):
         ])
 
     return response
+
+
