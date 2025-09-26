@@ -70,21 +70,24 @@ class Table(models.Model):
         return self.orders.filter(
             status__in=['pending', 'confirmed', 'preparing', 'ready']
         )
-
     def get_session_orders(self):
-        """Get orders from current active session - FIXED to include served orders for billing"""
+        """Get orders for billing - use table occupation time, not session time"""
         active_session = self.order_sessions.filter(is_active=True).first()
         if active_session:
+            # Use last_occupied_at instead of session.created_at
+            cutoff_time = self.last_occupied_at if self.last_occupied_at else active_session.created_at
             return self.orders.filter(
-                created_at__gte=active_session.created_at,
-                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+                created_at__gte=cutoff_time,
+                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
             ).exclude(status='cancelled').order_by('created_at')
-        today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         
+        # Fallback to today's orders
+        today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         return self.orders.filter(
             created_at__gte=today,
-            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
+            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
         ).exclude(status='cancelled').order_by('created_at')
+
     def get_total_bill_amount(self):
         """Calculate total bill amount for session orders - ENHANCED"""
         session_orders = self.get_session_orders()
@@ -259,25 +262,45 @@ class Order(models.Model):
             self.estimated_ready_time = timezone.now() + timezone.timedelta(
                 minutes=self.estimated_preparation_time or 15
             )
-            
-            
-        # FIXED: Auto-create order session when first order is placed
+        # DEBUG LOGGING - ADD THIS
         if not self.pk:  # Only for new orders
+            print(f"\n🆕 CREATING NEW ORDER:")
+            print(f"   Item: {self.menu_item.name}")
+            print(f"   Table: {self.table.table_number}")
+            print(f"   Table Status: {self.table.status}")
+
             # Check if table has active session
-            if not self.table.order_sessions.filter(is_active=True).exists():
-                # Create new billing session
-                from .models import OrderSession
-                OrderSession.objects.create(
-                    table=self.table,
-                    created_by=self.created_by,
-                    is_active=True
-                )
-            
+            existing_sessions = self.table.order_sessions.filter(is_active=True)
+            print(f"   Existing Active Sessions: {existing_sessions.count()}")
+
+            if not existing_sessions.exists():
+                print("   🎫 Creating NEW OrderSession...")
+                try:
+                    new_session = OrderSession.objects.create(
+                        table=self.table,
+                        created_by=self.created_by,
+                        is_active=True
+                    )
+                    print(f"   ✅ Session Created: ID={new_session.id}")
+                except Exception as e:
+                    print(f"   ❌ Session Creation FAILED: {e}")
+            else:
+                print(f"   ✅ Using Existing Session: ID={existing_sessions.first().id}")
+
             # Mark table as occupied
             if self.table.status == 'free':
+                print("   🏓 Marking table as OCCUPIED")
                 self.table.mark_occupied()
-        
-        super().save(*args, **kwargs)    
+            else:
+                print(f"   🏓 Table already {self.table.status}")
+
+        super().save(*args, **kwargs)
+
+        if not hasattr(self, '_session_debug_done'):
+            # Verify session after save
+            active_sessions = self.table.order_sessions.filter(is_active=True)
+            print(f"   🔍 After Save - Active Sessions: {active_sessions.count()}")
+            self._session_debug_done = True
 
     def __str__(self):
         return f"{self.order_number} - {self.table.table_number} - {self.menu_item.name}"
@@ -526,5 +549,9 @@ def handle_session_completed(sender, instance, **kwargs):
             broadcast_table_update(instance.table, 'occupied')
         except Exception:
             pass
+
+
+
+
 
 

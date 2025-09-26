@@ -1,5 +1,3 @@
-
-
 # apps/restaurant/views.py - COMPLETE Enhanced Views with ALL Functionality + Your Updates
 from rest_framework.views import APIView
 from rest_framework import viewsets, status
@@ -104,29 +102,40 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 class TablesWithOrdersView(APIView):
     """Get tables with their active orders - FIXED to include served orders and billing info"""
     permission_classes = [IsAuthenticated]
-
+    
     def get(self, request):
+        print(f"\n🌐 TablesWithOrdersView CALLED at {timezone.now()}")
         try:
             tables = Table.objects.filter(is_active=True).prefetch_related(
                 'orders__menu_item',
                 'orders__created_by',
                 'order_sessions'
             )
-
+            
             table_data = []
             for table in tables:
+                print(f"\n🏓 Processing Table {table.table_number}")
+                
                 # Get session orders (includes served orders for billing)
                 session_orders = table.get_session_orders()
-
+                print(f"   📦 Session Orders: {session_orders.count()}")
+                
                 # Get only active orders (for kitchen/display purposes)
                 active_orders = table.orders.filter(
                     status__in=['pending', 'confirmed', 'preparing', 'ready']
                 )
-
+                print(f"   🔥 Active Orders: {active_orders.count()}")
+                
+                # Check sessions
+                active_sessions = table.order_sessions.filter(is_active=True)
+                print(f"   🎫 Active Sessions: {active_sessions.count()}")
+                
                 # Check if table can be billed
                 can_bill = table.can_be_billed()
                 has_served_orders = table.has_served_orders()
-
+                print(f"   💰 Can Bill: {can_bill}")
+                print(f"   ✅ Has Served: {has_served_orders}")
+                
                 # Build active orders data
                 active_orders_data = []
                 for order in active_orders:
@@ -134,7 +143,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-
+                    
                     active_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -147,7 +156,7 @@ class TablesWithOrdersView(APIView):
                         'priority': order.priority,
                         'unit_price': float(order.unit_price)
                     })
-
+                
                 # Build session orders data for billing
                 session_orders_data = []
                 for order in session_orders:
@@ -155,7 +164,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-
+                    
                     session_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -168,7 +177,10 @@ class TablesWithOrdersView(APIView):
                         'special_instructions': order.special_instructions or '',
                         'created_at': order.created_at.isoformat()
                     })
-
+                
+                bill_amount = float(table.get_total_bill_amount())
+                print(f"   💰 Bill Amount: ₹{bill_amount}")
+                
                 table_data.append({
                     'id': table.id,
                     'table_number': table.table_number,
@@ -176,24 +188,19 @@ class TablesWithOrdersView(APIView):
                     'status': table.status,
                     'location': table.location or '',
                     'notes': table.notes or '',
-
                     # Active orders (for display/management)
                     'active_orders_count': active_orders.count(),
                     'active_orders': active_orders_data,
-
                     # Session orders (for billing)
                     'session_orders_count': session_orders.count(),
                     'session_orders': session_orders_data,
-
                     # Billing information
-                    'total_bill_amount': float(table.get_total_bill_amount()),
+                    'total_bill_amount': bill_amount,
                     'can_bill': session_orders.count() > 0,
-                    'has_served_orders': any(order.status == 'served' for order in session_orders),
-
+                    'has_served_orders': any(o.status == 'served' for o in session_orders),
                     # Time information
                     'time_occupied': table.get_occupied_duration(),
                     'last_occupied_at': table.last_occupied_at.isoformat() if table.last_occupied_at else None,
-
                     # EXPLICIT FLAGS FOR FRONTEND
                     'has_billing_data': session_orders.count() > 0,
                     'billing_ready': session_orders.count() > 0,
@@ -202,19 +209,20 @@ class TablesWithOrdersView(APIView):
                     'show_billing_options': can_bill or has_served_orders,
                     'show_manage_orders': active_orders.count() > 0,
                     'is_billable': session_orders.count() > 0,
-
                     # Enhanced metadata
                     'priority_level': getattr(table, 'priority_level', 1),
                     'created_at': table.created_at.isoformat() if hasattr(table, 'created_at') else None
                 })
-
+            
+            print(f"🌐 Returning {len(table_data)} tables")
             return Response({
                 'tables': table_data,
                 'total_tables': len(table_data),
                 'timestamp': timezone.now().isoformat()
             })
-
+            
         except Exception as e:
+            print(f"❌ ERROR in TablesWithOrdersView: {e}")
             logger.error(f"Error in TablesWithOrdersView: {e}")
             return Response({
                 'error': str(e),
@@ -1544,5 +1552,4 @@ def export_orders_csv(request):
         ])
 
     return response
-
 
