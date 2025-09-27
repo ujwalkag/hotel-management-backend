@@ -102,7 +102,7 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 class TablesWithOrdersView(APIView):
     """Get tables with their active orders - FIXED to include served orders and billing info"""
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request):
         print(f"\n🌐 TablesWithOrdersView CALLED at {timezone.now()}")
         try:
@@ -111,31 +111,31 @@ class TablesWithOrdersView(APIView):
                 'orders__created_by',
                 'order_sessions'
             )
-            
+
             table_data = []
             for table in tables:
                 print(f"\n🏓 Processing Table {table.table_number}")
-                
+
                 # Get session orders (includes served orders for billing)
                 session_orders = table.get_session_orders()
                 print(f"   📦 Session Orders: {session_orders.count()}")
-                
+
                 # Get only active orders (for kitchen/display purposes)
                 active_orders = table.orders.filter(
                     status__in=['pending', 'confirmed', 'preparing', 'ready']
                 )
                 print(f"   🔥 Active Orders: {active_orders.count()}")
-                
+
                 # Check sessions
                 active_sessions = table.order_sessions.filter(is_active=True)
                 print(f"   🎫 Active Sessions: {active_sessions.count()}")
-                
+
                 # Check if table can be billed
                 can_bill = table.can_be_billed()
                 has_served_orders = table.has_served_orders()
                 print(f"   💰 Can Bill: {can_bill}")
                 print(f"   ✅ Has Served: {has_served_orders}")
-                
+
                 # Build active orders data
                 active_orders_data = []
                 for order in active_orders:
@@ -143,7 +143,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-                    
+
                     active_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -156,7 +156,7 @@ class TablesWithOrdersView(APIView):
                         'priority': order.priority,
                         'unit_price': float(order.unit_price)
                     })
-                
+
                 # Build session orders data for billing
                 session_orders_data = []
                 for order in session_orders:
@@ -164,7 +164,7 @@ class TablesWithOrdersView(APIView):
                         created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                     except:
                         created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-                    
+
                     session_orders_data.append({
                         'id': order.id,
                         'menu_item_name': order.menu_item.name if order.menu_item else 'Custom Item',
@@ -177,10 +177,10 @@ class TablesWithOrdersView(APIView):
                         'special_instructions': order.special_instructions or '',
                         'created_at': order.created_at.isoformat()
                     })
-                
+
                 bill_amount = float(table.get_total_bill_amount())
                 print(f"   💰 Bill Amount: ₹{bill_amount}")
-                
+
                 table_data.append({
                     'id': table.id,
                     'table_number': table.table_number,
@@ -213,14 +213,14 @@ class TablesWithOrdersView(APIView):
                     'priority_level': getattr(table, 'priority_level', 1),
                     'created_at': table.created_at.isoformat() if hasattr(table, 'created_at') else None
                 })
-            
+
             print(f"🌐 Returning {len(table_data)} tables")
             return Response({
                 'tables': table_data,
                 'total_tables': len(table_data),
                 'timestamp': timezone.now().isoformat()
             })
-            
+
         except Exception as e:
             print(f"❌ ERROR in TablesWithOrdersView: {e}")
             logger.error(f"Error in TablesWithOrdersView: {e}")
@@ -330,7 +330,7 @@ class TableViewSet(viewsets.ModelViewSet):
         table = self.get_object()
 
         # Only allow admin and manager access
-        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'waiter','staff']:
             raise PermissionDenied('Admin or Manager access required')
 
         if request.method == 'GET':
@@ -652,7 +652,7 @@ class TableViewSet(viewsets.ModelViewSet):
         table = self.get_object()
 
         # Check permissions
-        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager', 'staff']:
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'staff']:
             raise PermissionDenied('Billing access required')
 
         try:
@@ -754,7 +754,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def admin_bulk_modify(self, request):
         """Admin bulk modification of orders for a table"""
-        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'waiter','staff']:
             raise PermissionDenied('Admin or Manager access required')
 
         table_id = request.data.get('table_id')
@@ -825,7 +825,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         order = self.get_object()
 
         # Only allow admin and manager access
-        if not hasattr(request, 'user') or request.user.role not in ['admin', 'manager']:
+        if not hasattr(request, 'user') or request.user.role not in ['admin', 'staff']:
             raise PermissionDenied('Admin or Manager access required')
 
         # Don't allow modification of served or cancelled orders
@@ -1135,7 +1135,7 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
     def get_permissions(self):
         """Only admin, staff and managers can access billing"""
         if hasattr(self.request, 'user') and self.request.user.is_authenticated:
-            if self.request.user.role not in ['admin', 'manager', 'staff']:
+            if self.request.user.role not in ['admin', 'staff']:
                 raise PermissionDenied('Access denied: Admin, Manager or Staff role required')
         return super().get_permissions()
 
@@ -1552,4 +1552,3 @@ def export_orders_csv(request):
         ])
 
     return response
-
