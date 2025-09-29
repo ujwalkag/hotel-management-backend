@@ -102,7 +102,7 @@ class MenuItemViewSet(viewsets.ModelViewSet):
 class TablesWithOrdersView(APIView):
     """Get tables with their active orders - FIXED to include served orders and billing info"""
     permission_classes = [IsAuthenticated]
-
+    @role_required(['admin','staff', 'waiter'])
     def get(self, request):
         print(f"\n🌐 TablesWithOrdersView CALLED at {timezone.now()}")
         try:
@@ -1344,6 +1344,8 @@ class EnhancedBillingViewSet(viewsets.ViewSet):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
+    if not hasattr(request.user, 'role') or request.user.role not in ['admin','staff', 'waiter']:
+        return Response({'error': 'Insufficient permissions'}, status=403)
     """Enhanced dashboard statistics"""
     try:
         # Current date stats
@@ -1552,3 +1554,5 @@ def export_orders_csv(request):
         ])
 
     return response
+
+
