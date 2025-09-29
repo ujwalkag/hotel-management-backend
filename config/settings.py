@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
-
+    'apps.advance_booking',
     'apps.users',
     'apps.menu',
     'apps.rooms',

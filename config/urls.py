@@ -21,6 +21,7 @@ urlpatterns = [
     path('api/auth/verify/', verify_token, name='token_verify'),
     path('api/staff-management/', include('apps.staff_management.urls')),
     path('api/restaurant/', include('apps.restaurant.urls')),
+    path('api/advance-booking/', include('apps.advance_booking.urls')), 
     #router.register(r"admin/tables", AdminTableViewSet, basename="admin-table")
   # This makes frontend calls work!
     #path('api/staff-management/', include('apps.staff_management.urls')),
