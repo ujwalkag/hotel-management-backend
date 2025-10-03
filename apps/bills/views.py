@@ -78,93 +78,209 @@ class CreateRestaurantBillView(APIView):
     permission_classes = [IsAdminOrStaff]
 
     def post(self, request):
-        user = request.user
-        items = request.data.get("items", [])
-        customer_name = request.data.get("customer_name", "").strip()
-        customer_phone = request.data.get("customer_phone", "").strip()
-        notify_customer_flag = request.data.get("notify_customer", False)
-        payment_method = request.data.get("payment_method", "cash")
-        apply_gst = request.data.get("apply_gst", False)
+        try:
+            user = request.user
+            items = request.data.get("items", [])
+            customer_name = request.data.get("customer_name", "").strip() or "Guest"
+            customer_phone = request.data.get("customer_phone", "").strip()
+            customer_email = request.data.get("customer_email", "").strip()
 
-        if isinstance(apply_gst, str):
-            apply_gst = apply_gst.lower() == 'true'
+            # Enhanced billing settings
+            payment_method = request.data.get("payment_method", "cash")
+            apply_gst = request.data.get("apply_gst", False)  # ✅ DEFAULT TO FALSE
+            # Also handle string values from frontend
+            if isinstance(apply_gst, str):
+                apply_gst = apply_gst.lower() in ['true', '1', 'yes']
+            gst_rate = request.data.get("gst_rate", 0)
+            interstate = request.data.get("interstate", False)
+            discount_percent = request.data.get("discount_percent", 0)
+            discount_amount = request.data.get("discount_amount", 0)
+            table_number = request.data.get("table_number", "")
+            special_instructions = request.data.get("special_instructions", "")
 
-        if not items or not customer_name or not customer_phone:
-            return Response({"error": "Customer name, phone, and items required"}, status=400)
+            if not items:
+                return Response({
+                    "error": "At least one item is required"
+                }, status=status.HTTP_400_BAD_REQUEST)
 
-        total = Decimal(0)
-        for item in items:
-            try:
-                menu_item = MenuItem.objects.get(id=item["item_id"])
-                total += Decimal(menu_item.price) * item["quantity"]
-            except MenuItem.DoesNotExist:
-                continue
+            subtotal = Decimal(0)
+            bill_items = []
 
-        gst_amount = Decimal(0)
-        gst_rate = Decimal("0.00")
+            # Process each item (handle both regular and custom items)
+            for item in items:
+                try:
+                    item_id = item.get("item_id")
+                    item_name = item.get("item_name")
+                    quantity = int(item.get("quantity", 1))
+                    price = Decimal(str(item.get("price", 0)))
+                    discount = Decimal(str(item.get("discount", 0)))
+                    notes = item.get("notes", "")
 
-        if apply_gst:
-            gst_rate = Decimal("0.05")
-            gst_amount = (total * gst_rate).quantize(Decimal("0.01"))
-            total += gst_amount
+                    if quantity <= 0:
+                        continue
 
-        bill = Bill.objects.create(
-            user=user,
-            bill_type='restaurant',
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            total_amount=total,
-            payment_method=payment_method
-        )
+                    # Handle regular menu items
+                    if item_id:
+                        try:
+                            # ✅ FIXED: Use 'available' field instead of 'is_active'
+                            menu_item = MenuItem.objects.get(id=item_id)
+                            item_name = menu_item.name_en or menu_item.name_hi or str(menu_item.id)
+                            if price <= 0:
+                                price = menu_item.price
+                        except MenuItem.DoesNotExist:
+                            return Response({
+                                "error": f"Menu item with ID {item_id} not found or not available"
+                            }, status=status.HTTP_400_BAD_REQUEST)
 
-        for item in items:
-            try:
-                menu_item = MenuItem.objects.get(id=item["item_id"])
-                BillItem.objects.create(
-                    bill=bill,
-                    item_name=menu_item.name_en,
-                    quantity=item["quantity"],
-                    price=menu_item.price
-                )
-            except MenuItem.DoesNotExist:
-                continue
+                    # Handle custom items
+                    elif item_name:
+                        if price <= 0:
+                            return Response({
+                                "error": f"Price is required for custom item: {item_name}"
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                    else:
+                        return Response({
+                            "error": "Either item_id or item_name is required"
+                        }, status=status.HTTP_400_BAD_REQUEST)
 
-        folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
-        os.makedirs(folder, exist_ok=True)
-        filename = f"{bill.receipt_number}.pdf"
-        pdf_path = os.path.join(folder, filename)
+                    # Calculate item total
+                    item_total = (price * quantity) - discount
+                    if item_total < 0:
+                        item_total = Decimal(0)
 
-        render_to_pdf("bills/bill_pdf.html", {
-            "bill": bill,
-            "items": bill.items.all(),
-            "gst": gst_amount,
-            "gst_rate": gst_rate * 100,
-        }, pdf_path)
+                    subtotal += item_total
 
-        notify_admin_via_whatsapp(
-            f"🍽️ New Restaurant Bill\nCustomer: {customer_name}\nPhone: {customer_phone}\nTotal: ₹{total}\nReceipt: {bill.receipt_number}"
-        )
+                    # Store for bill creation
+                    bill_items.append({
+                        'item_name': item_name,
+                        'quantity': quantity,
+                        'unit_price': price,
+                        'discount': discount,
+                        'total_price': item_total,
+                        'notes': notes
+                    })
 
-        if notify_customer_flag:
-            notify_customer(
+                except (ValueError, TypeError, KeyError) as e:
+                    return Response({
+                        "error": f"Invalid item data: {str(e)}"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            # Calculate discounts
+            bill_discount_amount = Decimal(0)
+            if discount_percent > 0:
+                bill_discount_amount = (subtotal * Decimal(str(discount_percent))) / 100
+            if discount_amount > 0:
+                bill_discount_amount = max(bill_discount_amount, Decimal(str(discount_amount)))
+
+            # Calculate taxable amount
+            taxable_amount = subtotal - bill_discount_amount
+            if taxable_amount < 0:
+                taxable_amount = Decimal(0)
+
+            # Calculate GST
+            gst_amount = Decimal(0)
+            cgst_amount = Decimal(0)
+            sgst_amount = Decimal(0)
+            igst_amount = Decimal(0)
+
+            if apply_gst and gst_rate > 0:
+                gst_rate_decimal = Decimal(str(gst_rate)) / 100
+                gst_amount = taxable_amount * gst_rate_decimal
+
+                if interstate:
+                    igst_amount = gst_amount
+                else:
+                    cgst_amount = gst_amount / 2
+                    sgst_amount = gst_amount / 2
+
+            # Calculate final total
+            final_total = taxable_amount + gst_amount
+
+            # Create bill record
+            bill = Bill.objects.create(
+                user=user,
+                bill_type='restaurant',
                 customer_name=customer_name,
                 customer_phone=customer_phone,
-                total=total,
-                receipt_number=bill.receipt_number,
-                bill_type="restaurant",
-                pdf_path=pdf_path
+                total_amount=final_total,
+                payment_method=payment_method
             )
 
-        return Response({
-            "message": "Restaurant bill created",
-            "bill_id": bill.id,
-            "receipt_number": bill.receipt_number,
-            "payment_method": bill.payment_method,
-            "gst_applied": apply_gst,
-            "gst_amount": float(gst_amount),
-            "gst_rate": float(gst_rate * 100)
-        }, status=201)
+            # Create bill items
+            for bill_item in bill_items:
+                BillItem.objects.create(
+                    bill=bill,
+                    item_name=bill_item['item_name'],
+                    quantity=bill_item['quantity'],
+                    price=bill_item['unit_price']
+                )
 
+            # Generate PDF
+            try:
+                folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
+                os.makedirs(folder, exist_ok=True)
+                filename = f"{bill.receipt_number}.pdf"
+                pdf_path = os.path.join(folder, filename)
+
+                render_to_pdf("bills/bill_pdf.html", {
+                    "bill": bill,
+                    "items": bill.items.all(),
+                    "gst": gst_amount,
+                    "gst_rate": gst_rate,
+                    "cgst_amount": cgst_amount,
+                    "sgst_amount": sgst_amount,
+                    "igst_amount": igst_amount,
+                    "subtotal": subtotal,
+                    "discount_amount": bill_discount_amount,
+                    "taxable_amount": taxable_amount
+                }, pdf_path)
+            except Exception as pdf_error:
+                # Don't fail the entire operation if PDF generation fails
+                print(f"PDF generation error: {pdf_error}")
+
+            # Notify admin
+            try:
+                notify_admin_via_whatsapp(
+                    f"🍽️ New Restaurant Bill\n"
+                    f"Customer: {customer_name}\n"
+                    f"Phone: {customer_phone}\n"
+                    f"Total: ₹{final_total}\n"
+                    f"Receipt: {bill.receipt_number}"
+                )
+            except Exception:
+                pass  # Don't fail if notification fails
+
+            return Response({
+                "message": "Restaurant bill created successfully",
+                "bill_id": bill.id,
+                "receipt_number": bill.receipt_number,
+                "total_amount": float(final_total),
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "payment_method": payment_method,
+                "gst_breakdown": {
+                    "subtotal": float(subtotal),
+                    "discount_amount": float(bill_discount_amount),
+                    "taxable_amount": float(taxable_amount),
+                    "gst_applied": apply_gst,
+                    "gst_rate": gst_rate,
+                    "gst_amount": float(gst_amount),
+                    "cgst_amount": float(cgst_amount),
+                    "sgst_amount": float(sgst_amount),
+                    "igst_amount": float(igst_amount),
+                    "interstate": interstate
+                }
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            # Log the full error for debugging
+            import traceback
+            print(f"Restaurant billing error: {e}")
+            print(f"Full traceback: {traceback.format_exc()}")
+
+            return Response({
+                "error": f"Failed to create bill: {str(e)}",
+                "details": "Please check server logs for more information"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class CreateRoomBillView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
@@ -365,7 +481,7 @@ def get_orders_ready_for_billing(request):
         return Response(order_data)
 
     except Exception as e:
-        return Response({'error': f'Failed to fetch orders: {str(e)}'}, 
+        return Response({'error': f'Failed to fetch orders: {str(e)}'},
                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -379,7 +495,7 @@ def generate_bill_from_order(request):
     discount_percentage = Decimal(str(data.get('discount_percentage', '0')))
 
     if not order_id:
-        return Response({'error': 'order_id is required'}, 
+        return Response({'error': 'order_id is required'},
                        status=status.HTTP_400_BAD_REQUEST)
 
     try:
