@@ -608,6 +608,7 @@ class TableViewSet(viewsets.ModelViewSet):
             service_charge = request.data.get('service_charge', 0)
             notes = request.data.get('notes', '')
             admin_notes = request.data.get('admin_notes', '')
+            apply_gst = request.data.get('apply_gst', True) 
 
             # Update session with billing details
             session.discount_amount = Decimal(str(discount_amount))
@@ -616,6 +617,7 @@ class TableViewSet(viewsets.ModelViewSet):
             session.payment_method = payment_method
             session.notes = notes
             session.admin_notes = admin_notes
+            session.apply_gst = apply_gst
 
             # CRITICAL FIX: Generate receipt_number if missing
             #if not session.receipt_number:
@@ -636,7 +638,8 @@ class TableViewSet(viewsets.ModelViewSet):
                 'receipt_number': session.receipt_number,
                 'final_amount': float(final_amount),
                 'table_status': table.status,
-                'session_data': OrderSessionSerializer(session).data
+                'session_data': OrderSessionSerializer(session).data,
+                'apply_gst': apply_gst 
             })
 
         except Exception as e:
@@ -1554,5 +1557,4 @@ def export_orders_csv(request):
         ])
 
     return response
-
 
