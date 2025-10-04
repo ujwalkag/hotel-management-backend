@@ -1,4 +1,3 @@
-
 # apps/restaurant/models.py - COMPLETE Enhanced Kitchen Display System Models with ALL FIXES INTEGRATED
 from django.db import models
 from apps.users.models import CustomUser
@@ -71,22 +70,34 @@ class Table(models.Model):
             status__in=['pending', 'confirmed', 'preparing', 'ready']
         )
     def get_session_orders(self):
-        """Get orders for billing - use table occupation time, not session time"""
+        """Get orders for billing scoped to the active session timeframe."""
+        from django.utils import timezone
+
         active_session = self.order_sessions.filter(is_active=True).first()
         if active_session:
-            # Use last_occupied_at instead of session.created_at
-            cutoff_time = self.last_occupied_at if self.last_occupied_at else active_session.created_at
-            return self.orders.filter(
-                created_at__gte=cutoff_time,
-                status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
-            ).exclude(status='cancelled').order_by('created_at')
-        
-        # Fallback to today's orders
+            start_time = active_session.created_at
+            end_time = active_session.completed_at or timezone.now()
+            return (
+                self.orders
+                    .filter(
+                        created_at__gte=start_time,
+                        created_at__lte=end_time,
+                        status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+                    )
+                    .exclude(status='cancelled')
+                    .order_by('created_at')
+            )
+
         today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        return self.orders.filter(
-            created_at__gte=today,
-            status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
-        ).exclude(status='cancelled').order_by('created_at')
+        return (
+            self.orders
+                .filter(
+                    created_at__gte=today,
+                    status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+                )
+                .exclude(status='cancelled')
+                .order_by('created_at')
+        )
 
     def get_total_bill_amount(self):
         """Calculate total bill amount for session orders - ENHANCED"""
@@ -401,6 +412,7 @@ class OrderSession(models.Model):
     payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='pending')
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, blank=True)
     payment_details = models.JSONField(default=dict, help_text='Payment breakdown for mixed payments')
+    apply_gst = models.BooleanField(default=True, help_text='Whether to apply GST to this session')
 
     # Admin and operational
     notes = models.TextField(blank=True)
@@ -419,11 +431,21 @@ class OrderSession(models.Model):
         return f"Session {self.receipt_number or self.session_id} - Table {self.table.table_number}"
 
     def get_session_orders(self):
-        """Get all orders in this session - FIXED"""
-        return self.table.orders.filter(
-            created_at__gte=self.created_at,
-            created_at__lte=self.completed_at if self.completed_at else timezone.now()
-        ).order_by('created_at')
+        """Get all orders in this session timeframe."""
+        from django.utils import timezone
+
+        end_time = self.completed_at or timezone.now()
+        return (
+            self.table.orders
+                .filter(
+                    created_at__gte=self.created_at,
+                    created_at__lte=end_time,
+                    status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']
+                )
+                .exclude(status='cancelled')
+                .order_by('created_at')
+        )
+
 
     def calculate_totals(self):
         """Calculate session totals with GST - ENHANCED"""
@@ -441,8 +463,11 @@ class OrderSession(models.Model):
         taxable_amount = subtotal - self.discount_amount
 
         # Calculate GST (18% for restaurants in India)
-        gst_rate = Decimal('0.18')  # 18%
-        self.tax_amount = taxable_amount * gst_rate
+        if getattr(self, 'apply_gst', True):  # Default to True for backward compatibility
+            gst_rate = Decimal('0.05')  # 18%
+            self.tax_amount = taxable_amount * gst_rate
+        else:
+            self.tax_amount = Decimal('0.00')  # No GST
 
         # Calculate final amount
         self.subtotal_amount = subtotal
@@ -470,6 +495,38 @@ class OrderSession(models.Model):
             self.billed_by = billed_by
 
         self.save()
+
+        try:
+            from apps.bills.models import Bill, BillItem
+
+            # Create Bill record
+            bill = Bill.objects.create(
+                receipt_number=self.receipt_number,
+                customer_name=self.notes or 'Guest',
+                customer_phone='',  # You can add phone field to OrderSession if needed
+                bill_type='restaurant',
+                total_amount=self.final_amount,
+                payment_method=self.payment_method or 'cash',
+                user=billed_by or self.created_by
+            )
+
+            # Create BillItems from session orders
+            orders = self.get_session_orders()
+            for order in orders:
+                BillItem.objects.create(
+                    bill=bill,
+                    item_name=f"{order.menu_item.name} (Table {self.table.table_number})",
+                    quantity=order.quantity,
+                    price=order.unit_price
+                )
+
+            print(f"✅ Created Bill record {bill.receipt_number} for table management session")
+
+        except Exception as e:
+            print(f"❌ Error creating Bill record: {e}")
+            # Don't fail the session completion if Bill creation fails
+
+        # Mark table as free
 
         # Mark table as free
         self.table.mark_free()
@@ -549,9 +606,6 @@ def handle_session_completed(sender, instance, **kwargs):
             broadcast_table_update(instance.table, 'occupied')
         except Exception:
             pass
-
-
-
 
 
 
