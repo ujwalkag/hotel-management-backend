@@ -1,4 +1,4 @@
-# apps/bills/views.py - COMPLETE UPDATED VERSION
+# apps/bills/views.py - COMPLETE UPDATED VERSION WITH ALL name_en FIXES
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -14,13 +14,12 @@ import os
 import re
 
 from .models import Bill, BillItem
-#from apps.menu.models import MenuItem
+# FIXED: Use restaurant app MenuItem model
 from apps.restaurant.models import MenuItem
 from apps.rooms.models import Room
 from .permissions import IsAdminOrStaff
 from .notifications import notify_admin_via_whatsapp
 from .utils import render_to_pdf
-
 from apps.notifications.twilio import notify_customer_via_sms
 from django.template.loader import render_to_string
 from xhtml2pdf import pisa
@@ -28,14 +27,14 @@ from io import BytesIO
 
 def is_valid_indian_phone(phone):
     # Only allow 10 digits, starts with 6-9
-    return bool(re.fullmatch(r"[6-9]\d{9}", phone or ""))
+    return bool(re.fullmatch(r"[6-9]\\d{9}", phone or ""))
 
 def customer_bill_message(bill_type, customer_name, total, receipt_number, days=None):
     if bill_type == "restaurant":
-        return f"Hi {customer_name}, your restaurant bill is ₹{total}. Receipt: {receipt_number}\nThank you for dining with us!"
+        return f"Hi {customer_name}, your restaurant bill is ₹{total}. Receipt: {receipt_number}\\nThank you for dining with us!"
     else:
         # Room bill
-        return f"Hi {customer_name}, your room bill is ₹{total}" + (f" for {days} day(s)." if days else "") + f" Receipt: {receipt_number}\nThank you for staying with us!"
+        return f"Hi {customer_name}, your room bill is ₹{total}" + (f" for {days} day(s)." if days else "") + f" Receipt: {receipt_number}\\nThank you for staying with us!"
 
 def notify_customer(customer_name, customer_phone, total, receipt_number, bill_type, pdf_path=None, days=None):
     # Prefer WhatsApp, fallback to SMS, only if phone is valid
@@ -58,11 +57,10 @@ class DailyBillReportView(APIView):
             return Response({"error": "Invalid date format. Use YYYY-MM-DD."}, status=400)
 
         bills = Bill.objects.filter(created_at__date=selected_date).select_related("user", "room").prefetch_related("items").order_by("created_at")
-
         html_content = render_to_string("bills/daily_report.html", {"bills": bills, "report_date": selected_date})
+
         pdf_output = BytesIO()
         pisa_status = pisa.CreatePDF(html_content, dest=pdf_output)
-
         if pisa_status.err:
             return Response({"error": "Error generating PDF"}, status=500)
 
@@ -89,9 +87,11 @@ class CreateRestaurantBillView(APIView):
             # Enhanced billing settings
             payment_method = request.data.get("payment_method", "cash")
             apply_gst = request.data.get("apply_gst", False)  # ✅ DEFAULT TO FALSE
+            
             # Also handle string values from frontend
             if isinstance(apply_gst, str):
                 apply_gst = apply_gst.lower() in ['true', '1', 'yes']
+
             gst_rate = request.data.get("gst_rate", 0)
             interstate = request.data.get("interstate", False)
             discount_percent = request.data.get("discount_percent", 0)
@@ -123,9 +123,10 @@ class CreateRestaurantBillView(APIView):
                     # Handle regular menu items
                     if item_id:
                         try:
-                            # ✅ FIXED: Use 'available' field instead of 'is_active'
+                            # ✅ FIXED: Use MenuItem from restaurant app
                             menu_item = MenuItem.objects.get(id=item_id)
-                            item_name = getattr(menu_item, 'name', None) or getattr(menu_item, 'name_hi', None) or str(menu_item.id)
+                            # ✅ FIXED: Use correct field name 'name' instead of 'name_en'
+                            item_name = getattr(menu_item, 'name', None) or str(menu_item.id)
                             if price <= 0:
                                 price = menu_item.price
                         except MenuItem.DoesNotExist:
@@ -165,6 +166,7 @@ class CreateRestaurantBillView(APIView):
                     return Response({
                         "error": f"Invalid item data: {str(e)}"
                     }, status=status.HTTP_400_BAD_REQUEST)
+
             # Calculate discounts
             bill_discount_amount = Decimal(0)
             if discount_percent > 0:
@@ -186,7 +188,7 @@ class CreateRestaurantBillView(APIView):
             if apply_gst and gst_rate > 0:
                 gst_rate_decimal = Decimal(str(gst_rate)) / 100
                 gst_amount = taxable_amount * gst_rate_decimal
-
+                
                 if interstate:
                     igst_amount = gst_amount
                 else:
@@ -234,6 +236,7 @@ class CreateRestaurantBillView(APIView):
                     "discount_amount": bill_discount_amount,
                     "taxable_amount": taxable_amount
                 }, pdf_path)
+
             except Exception as pdf_error:
                 # Don't fail the entire operation if PDF generation fails
                 print(f"PDF generation error: {pdf_error}")
@@ -241,10 +244,10 @@ class CreateRestaurantBillView(APIView):
             # Notify admin
             try:
                 notify_admin_via_whatsapp(
-                    f"🍽️ New Restaurant Bill\n"
-                    f"Customer: {customer_name}\n"
-                    f"Phone: {customer_phone}\n"
-                    f"Total: ₹{final_total}\n"
+                    f"🍽️ New Restaurant Bill\\n"
+                    f"Customer: {customer_name}\\n"
+                    f"Phone: {customer_phone}\\n"
+                    f"Total: ₹{final_total}\\n"
                     f"Receipt: {bill.receipt_number}"
                 )
             except Exception:
@@ -277,7 +280,7 @@ class CreateRestaurantBillView(APIView):
             import traceback
             print(f"Restaurant billing error: {e}")
             print(f"Full traceback: {traceback.format_exc()}")
-
+            
             return Response({
                 "error": f"Failed to create bill: {str(e)}",
                 "details": "Please check server logs for more information"
@@ -324,6 +327,7 @@ class CreateRoomBillView(APIView):
                 gst_rate = Decimal("0.05")
             else:
                 gst_rate = Decimal("0.12")
+
         gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
         total_amount = base_total + gst_amount
 
@@ -343,7 +347,7 @@ class CreateRoomBillView(APIView):
             qty = int(it.get("quantity", 1))
             BillItem.objects.create(
                 bill=bill,
-                item_name=f"{room.type_en} / {room.type_hi}",
+                item_name=f"{getattr(room, 'type_en', room.type)} / {getattr(room, 'type_hi', room.type)}",
                 quantity=qty,
                 price=room.price_per_day
             )
@@ -353,6 +357,7 @@ class CreateRoomBillView(APIView):
         os.makedirs(folder, exist_ok=True)
         filename = f"{bill.receipt_number}.pdf"
         pdf_path = os.path.join(folder, filename)
+
         render_to_pdf("bills/bill_pdf.html", {
             "bill": bill,
             "items": bill.items.all(),
@@ -362,7 +367,7 @@ class CreateRoomBillView(APIView):
 
         # Notify admin
         notify_admin_via_whatsapp(
-            f"🛏️ New Room Bill\nCustomer: {customer_name}\nPhone: {customer_phone}\nTotal: ₹{total_amount}\nReceipt: {bill.receipt_number}"
+            f"🛏️ New Room Bill\\nCustomer: {customer_name}\\nPhone: {customer_phone}\\nTotal: ₹{total_amount}\\nReceipt: {bill.receipt_number}"
         )
 
         # Notify customer if requested
@@ -383,7 +388,6 @@ class CreateRoomBillView(APIView):
             "total_amount": float(total_amount),
         }, status=status.HTTP_201_CREATED)
 
-
 class BillPDFView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
 
@@ -398,7 +402,6 @@ class BillPDFView(APIView):
             response = HttpResponse(f.read(), content_type="application/pdf")
             response["Content-Disposition"] = f"inline; filename={bill.receipt_number}.pdf"
             return response
-
 
 class BillDetailView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
@@ -415,7 +418,7 @@ class BillDetailView(APIView):
             "customer_name": bill.customer_name,
             "customer_phone": bill.customer_phone,
             "user_email": bill.user.email,
-            "room_name": f"{bill.room.type_en} / {bill.room.type_hi}" if bill.room else None,
+            "room_name": f"{getattr(bill.room, 'type_en', bill.room.type)} / {getattr(bill.room, 'type_hi', bill.room.type)}" if bill.room else None,
             "created_at": bill.created_at.isoformat(),
             "items": [
                 {
@@ -426,70 +429,104 @@ class BillDetailView(APIView):
                 } for item in bill.items.all()
             ]
         }
-
         return Response(data)
 
-
-# ============================================
-# ENHANCED BILLING API FUNCTIONS
-# ============================================
+# ================================================
+# ENHANCED BILLING API FUNCTIONS - ALL name_en FIXED
+# ================================================
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_orders_ready_for_billing(request):
-    """Get all orders that are ready for billing"""
+    """Get all orders that are ready for billing - FIXED name_en issues"""
     try:
-        from apps.tables.models import TableOrder
-
-        # Get completed orders that haven't been billed yet
-        orders = TableOrder.objects.filter(
-            status__in=['completed', 'ready']
-        ).exclude(status='billed').select_related('table', 'waiter').prefetch_related('items__menu_item')
-
-        order_data = []
-        for order in orders:
-            order_data.append({
-                'id': order.id,
-                'order_number': order.order_number,
-                'table_id': order.table.id,
-                'table_number': order.table.table_number,
-                'customer_name': order.customer_name or 'Guest',
-                'customer_phone': order.customer_phone or '',
-                'waiter_name': order.waiter.email if order.waiter else 'Unknown',
-                'total_amount': float(order.total_amount or 0),
-                'items_count': order.items.count(),
-                'created_at': order.created_at.isoformat(),
-                'status': order.status,
-                'items': [
-                    {
-                        'id': item.id,
-                        'name': item.menu_item.name_en,
-                        'name_hi': getattr(item.menu_item, 'name_hi', ''),
-                        'quantity': item.quantity,
-                        'price': float(item.price),
-                        'total': float(item.total_price),
+        # Check if we have restaurant app orders or separate tables app orders
+        try:
+            from apps.restaurant.models import Order
+            # Get completed orders that haven't been billed yet
+            orders = Order.objects.filter(
+                status__in=['served', 'ready']
+            ).select_related('table', 'menu_item', 'created_by')
+            
+            order_data = []
+            for order in orders:
+                order_data.append({
+                    'id': order.id,
+                    'order_number': getattr(order, 'order_number', f"ORD-{order.id}"),
+                    'table_id': order.table.id,
+                    'table_number': order.table.table_number,
+                    'customer_name': 'Guest',
+                    'customer_phone': '',
+                    'waiter_name': order.created_by.email if order.created_by else 'Unknown',
+                    'total_amount': float(order.total_price or 0),
+                    'items_count': 1,
+                    'created_at': order.created_at.isoformat(),
+                    'status': order.status,
+                    'items': [{
+                        'id': order.id,
+                        'name': getattr(order.menu_item, 'name', 'Unknown Item'),  # ✅ FIXED
+                        'name_hi': getattr(order.menu_item, 'name', ''),  # ✅ FIXED
+                        'quantity': order.quantity,
+                        'price': float(order.unit_price),
+                        'total': float(order.total_price),
                         'menu_item': {
-                            'id': item.menu_item.id,
-                            'name_en': item.menu_item.name_en,
-                            'name_hi': getattr(item.menu_item, 'name_hi', ''),
-                            'price': float(item.menu_item.price)
+                            'id': order.menu_item.id,
+                            'name_en': getattr(order.menu_item, 'name', 'Unknown'),  # ✅ FIXED
+                            'name_hi': getattr(order.menu_item, 'name', ''),  # ✅ FIXED
+                            'price': float(order.menu_item.price)
                         }
-                    }
-                    for item in order.items.all()
-                ]
-            })
-
-        return Response(order_data)
+                    }]
+                })
+            return Response(order_data)
+        except ImportError:
+            # Fallback to tables app if it exists
+            from apps.tables.models import TableOrder
+            orders = TableOrder.objects.filter(
+                status__in=['completed', 'ready']
+            ).exclude(status='billed').select_related('table', 'waiter').prefetch_related('items__menu_item')
+            
+            order_data = []
+            for order in orders:
+                order_data.append({
+                    'id': order.id,
+                    'order_number': order.order_number,
+                    'table_id': order.table.id,
+                    'table_number': order.table.table_number,
+                    'customer_name': order.customer_name or 'Guest',
+                    'customer_phone': order.customer_phone or '',
+                    'waiter_name': order.waiter.email if order.waiter else 'Unknown',
+                    'total_amount': float(order.total_amount or 0),
+                    'items_count': order.items.count(),
+                    'created_at': order.created_at.isoformat(),
+                    'status': order.status,
+                    'items': [
+                        {
+                            'id': item.id,
+                            'name': getattr(item.menu_item, 'name', 'Unknown Item'),  # ✅ FIXED
+                            'name_hi': getattr(item.menu_item, 'name', ''),  # ✅ FIXED
+                            'quantity': item.quantity,
+                            'price': float(item.price),
+                            'total': float(item.total_price),
+                            'menu_item': {
+                                'id': item.menu_item.id,
+                                'name_en': getattr(item.menu_item, 'name', 'Unknown'),  # ✅ FIXED
+                                'name_hi': getattr(item.menu_item, 'name', ''),  # ✅ FIXED
+                                'price': float(item.menu_item.price)
+                            }
+                        }
+                        for item in order.items.all()
+                    ]
+                })
+            return Response(order_data)
 
     except Exception as e:
         return Response({'error': f'Failed to fetch orders: {str(e)}'},
                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def generate_bill_from_order(request):
-    """Generate bill from completed order with GST calculation"""
+    """Generate bill from completed order with GST calculation - FIXED name_en issues"""
     data = request.data
     order_id = data.get('order_id')
     payment_method = data.get('payment_method', 'cash')
@@ -500,35 +537,74 @@ def generate_bill_from_order(request):
                        status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        from apps.tables.models import TableOrder
+        # Try restaurant app first
+        try:
+            from apps.restaurant.models import Order
+            order = get_object_or_404(Order, id=order_id)
+            
+            # Check if order is ready for billing
+            if order.status not in ['served', 'ready']:
+                return Response({
+                    'error': f'Order must be completed before billing. Current status: {order.status}'
+                }, status=status.HTTP_400_BAD_REQUEST)
 
-        order = get_object_or_404(TableOrder, id=order_id)
+            # Create bill using existing structure
+            bill = Bill.objects.create(
+                user=request.user,
+                bill_type='restaurant',
+                customer_name='Guest',
+                customer_phone='N/A',
+                payment_method=payment_method
+            )
 
-        # Check if order is ready for billing
-        if order.status not in ['completed', 'ready']:
-            return Response({
-                'error': f'Order must be completed before billing. Current status: {order.status}'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        # Create bill using existing structure
-        bill = Bill.objects.create(
-            user=request.user,
-            bill_type='restaurant',
-            customer_name=order.customer_name or 'Guest',
-            customer_phone=order.customer_phone or 'N/A',
-            payment_method=payment_method
-        )
-
-        # Add bill items from order
-        subtotal = Decimal('0')
-        for order_item in order.items.all():
+            # Add bill item from order
             BillItem.objects.create(
                 bill=bill,
-                item_name=f"{order_item.menu_item.name_en} (Table {order.table.table_number})",
-                quantity=order_item.quantity,
-                price=order_item.price
+                item_name=f"{getattr(order.menu_item, 'name', 'Unknown Item')} (Table {order.table.table_number})",  # ✅ FIXED
+                quantity=order.quantity,
+                price=order.unit_price
             )
-            subtotal += Decimal(str(order_item.quantity)) * Decimal(str(order_item.price))
+            subtotal = Decimal(str(order.quantity)) * Decimal(str(order.unit_price))
+
+        except ImportError:
+            # Fallback to tables app
+            from apps.tables.models import TableOrder
+            order = get_object_or_404(TableOrder, id=order_id)
+            
+            # Check if order is ready for billing
+            if order.status not in ['completed', 'ready']:
+                return Response({
+                    'error': f'Order must be completed before billing. Current status: {order.status}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Create bill using existing structure
+            bill = Bill.objects.create(
+                user=request.user,
+                bill_type='restaurant',
+                customer_name=order.customer_name or 'Guest',
+                customer_phone=order.customer_phone or 'N/A',
+                payment_method=payment_method
+            )
+
+            # Add bill items from order
+            subtotal = Decimal('0')
+            for order_item in order.items.all():
+                BillItem.objects.create(
+                    bill=bill,
+                    item_name=f"{getattr(order_item.menu_item, 'name', 'Unknown Item')} (Table {order.table.table_number})",  # ✅ FIXED
+                    quantity=order_item.quantity,
+                    price=order_item.price
+                )
+                subtotal += Decimal(str(order_item.quantity)) * Decimal(str(order_item.price))
+
+            # Mark order as billed
+            order.status = 'billed'
+            order.save()
+
+            # Free up table if no more active orders
+            if hasattr(order.table, 'active_orders_count') and order.table.active_orders_count == 0:
+                order.table.is_occupied = False
+                order.table.save()
 
         # Apply discount
         discount_amount = (subtotal * discount_percentage) / 100
@@ -544,15 +620,6 @@ def generate_bill_from_order(request):
         # Update bill with calculations
         bill.total_amount = total_amount
         bill.save()
-
-        # Mark order as billed
-        order.status = 'billed'
-        order.save()
-
-        # Free up table if no more active orders
-        if order.table.active_orders_count == 0:
-            order.table.is_occupied = False
-            order.table.save()
 
         # Create GST breakdown for receipt
         gst_breakdown = {
@@ -580,4 +647,3 @@ def generate_bill_from_order(request):
         return Response({
             'error': f'Failed to generate bill: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
