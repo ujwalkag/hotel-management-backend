@@ -132,12 +132,32 @@ class Table(models.Model):
 
 class MenuCategory(models.Model):
     """Menu item categories"""
+    name_en = models.CharField(max_length=100, blank=True, help_text='English name')
+    name_hi = models.CharField(max_length=100, blank=True, help_text='Hindi name')
+    description_en = models.TextField(blank=True, help_text='English description')
+    description_hi = models.TextField(blank=True, help_text='Hindi description')
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     display_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     icon = models.CharField(max_length=50, blank=True, help_text='Icon class or emoji')
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    def get_display_name(self, language='en'):
+        """Get name in specified language with fallback"""
+        if language == 'hi' and self.name_hi:
+            return self.name_hi
+        elif self.name_en:
+            return self.name_en
+        return self.name
+
+    def get_display_description(self, language='en'):
+        """Get description in specified language with fallback"""  
+        if language == 'hi' and self.description_hi:
+            return self.description_hi
+        elif self.description_en:
+            return self.description_en
+        return self.description
 
     class Meta:
         db_table = 'menu_category'
@@ -155,6 +175,10 @@ class MenuItem(models.Model):
         ('discontinued', 'Discontinued'),
         ('seasonal', 'Seasonal')
     ]
+    name_en = models.CharField(max_length=200, blank=True, help_text='English name')
+    name_hi = models.CharField(max_length=200, blank=True, help_text='Hindi name')  
+    description_en = models.TextField(blank=True, help_text='English description')
+    description_hi = models.TextField(blank=True, help_text='Hindi description')
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     category = models.ForeignKey(MenuCategory, on_delete=models.CASCADE, related_name='items')
@@ -170,6 +194,22 @@ class MenuItem(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    def get_display_name(self, language='en'):
+        """Get name in specified language with fallback"""
+        if language == 'hi' and self.name_hi:
+            return self.name_hi
+        elif self.name_en:
+            return self.name_en
+        return self.name
+
+    def get_display_description(self, language='en'):
+        """Get description in specified language with fallback"""
+        if language == 'hi' and self.description_hi:
+            return self.description_hi
+        elif self.description_en:
+            return self.description_en
+        return self.description
 
     class Meta:
         db_table = 'menu_item'
@@ -606,6 +646,5 @@ def handle_session_completed(sender, instance, **kwargs):
             broadcast_table_update(instance.table, 'occupied')
         except Exception:
             pass
-
 
 

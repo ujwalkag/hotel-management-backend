@@ -15,9 +15,22 @@ class MenuItemViewSet(viewsets.ModelViewSet):
     queryset = MenuItem.objects.all().order_by('-created_at')
     serializer_class = MenuItemSerializer
     permission_classes = [IsAdminOrReadOnly]
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # Get language from query params or headers
+        language = self.request.query_params.get('lang', 'en')
+        context['language'] = language
+        return context
 
 class MenuCategoryViewSet(viewsets.ModelViewSet):
     queryset = MenuCategory.objects.all()
     serializer_class = MenuCategorySerializer
     permission_classes = [IsAdminOrReadOnly]
+
+
+
+
+
+
+
 

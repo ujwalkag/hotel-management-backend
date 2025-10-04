@@ -60,6 +60,11 @@ class MenuCategoryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = MenuCategory.objects.filter(is_active=True)
         return queryset.order_by('display_order', 'name')
+    
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['language'] = self.request.query_params.get('lang', 'en')
+        return context
 
     def perform_destroy(self, instance):
         """Soft delete - mark as inactive"""
@@ -248,14 +253,18 @@ class MenuForOrderingView(APIView):
                     menu_data.append({
                         'id': category.id,
                         'name': category.name,
+                        'name_hi': category.name,  # ✅ Category name as Hindi
+                        'name_en': category.name,  # ✅ Same for English (could be translated later)
                         'description': category.description,
                         'icon': getattr(category, 'icon', '🍽️'),
                         'items': [{
                             'id': item.id,
                             'name': item.name,
+                            'name_hi': item.name,                 # ✅ Hindi name (same as name)
                             'name_en': item.name,
                             'description': item.description,
-                            'description_en': item.description,
+                            'description_hi': item.description,  # ✅ Hindi description
+                            'description_en': item.description,  # ✅ English description
                             'price': float(item.price),
                             'category_id': category.id,
                             'is_veg': getattr(item, 'is_veg', True),
@@ -328,18 +337,18 @@ class TableViewSet(viewsets.ModelViewSet):
     def manage_orders(self, request, pk=None):
         """FIXED: Admin functionality to view and modify table orders"""
         table = self.get_object()
-        
+
         # Only allow admin, staff, and waiter access
         if not hasattr(request, 'user') or request.user.role not in ['admin', 'staff', 'waiter']:
             raise PermissionDenied('Admin, Staff, or Waiter access required')
 
         if request.method == 'GET':
             print(f"\n🔍 MANAGE_ORDERS called for Table {table.table_number}")
-            
+
             # CRITICAL FIX: Get all billable orders for this table
             # Check if table has an active billing session
             active_session = table.order_sessions.filter(is_active=True).first()
-            
+
             if active_session:
                 print(f"📋 Found active session: {active_session.session_id}")
                 # Get orders from active session start time
@@ -355,7 +364,7 @@ class TableViewSet(viewsets.ModelViewSet):
                     created_at__gte=today,
                     status__in=['pending', 'confirmed', 'preparing', 'ready', 'served']  # INCLUDE SERVED
                 ).exclude(status='cancelled').order_by('created_at')
-                
+
                 # If no orders today, get the most recent orders
                 if not session_orders.exists():
                     print("📋 No orders today, getting recent orders")
@@ -374,7 +383,7 @@ class TableViewSet(viewsets.ModelViewSet):
                     created_by_name = order.created_by.get_full_name() if order.created_by else 'System'
                 except:
                     created_by_name = getattr(order.created_by, 'username', 'System') if order.created_by else 'System'
-                    
+
                 orders_data.append({
                     'id': order.id,
                     'order_number': order.order_number,
@@ -1393,27 +1402,51 @@ def system_health(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def menu_for_ordering(request):
-    """Get menu optimized for ordering interface"""
-    categories = MenuCategory.objects.filter(is_active=True).prefetch_related('items')
-    menu_data = []
+    try:
+        """Get menu optimized for ordering interface"""
+        categories = MenuCategory.objects.filter(is_active=True).prefetch_related('items')
+        menu_data = []
 
-    for category in categories:
-        available_items = category.items.filter(
-            is_active=True,
-            availability='available'
-        ).order_by('display_order', 'name')
+        for category in categories:
+            available_items = category.items.filter(
+                is_active=True,
+                availability='available'
+            ).order_by('display_order', 'name')
 
-        if available_items.exists():
-            menu_data.append({
-                'id': category.id,
-                'name': category.name,
-                'description': category.description,
-                'icon': category.icon,
-                'items': MenuItemSerializer(available_items, many=True).data
-            })
+            if available_items.exists():
+                    # Create enhanced item data with Hindi support
+                    items_data = []
+                    for item in available_items:
+                        items_data.append({
+                            'id': item.id,
+                            'name': item.name,                    # Primary name (Hindi)
+                            'name_hi': item.name,                 # Hindi name
+                            'name_en': item.name,                 # English name (same for now)
+                            'description': item.description,
+                            'description_hi': item.description,   # Hindi description
+                            'description_en': item.description,   # English description
+                            'price': float(item.price),
+                            'category_id': category.id,
+                            'is_veg': getattr(item, 'is_veg', True),
+                            'is_spicy': getattr(item, 'is_spicy', False),
+                            'preparation_time': getattr(item, 'preparation_time', 15),
+                            'availability': item.availability,
+                            'image': item.image_url if item.image_url else None
+                        })
 
-    return Response(menu_data)
+                    menu_data.append({
+                        'id': category.id,
+                        'name': category.name,
+                        'name_hi': category.name,      # Hindi category name
+                        'name_en': category.name,      # English category name
+                        'description': category.description,
+                        'icon': category.icon,
+                        'items': items_data
+                    })
 
+        return Response(menu_data)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def quick_order(request):
@@ -1522,6 +1555,4 @@ def export_orders_csv(request):
         ])
 
     return response
-
-
 

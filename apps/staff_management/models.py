@@ -4,6 +4,10 @@ from decimal import Decimal
 from datetime import datetime, date
 
 class Designation(models.Model):
+    name_en = models.CharField(max_length=100, blank=True)  # Add English
+    name_hi = models.CharField(max_length=100, blank=True)  # Add Hindi
+    description_en = models.TextField(blank=True, null=True)  # Add English
+    description_hi = models.TextField(blank=True, null=True)  # Add Hindi
     name = models.CharField(max_length=100, unique=True)
     daily_wage = models.DecimalField(max_digits=8, decimal_places=2)
     monthly_salary = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -154,3 +158,5 @@ class MonthlyPayment(models.Model):
 
     def __str__(self):
         return f"{self.employee.name} - {self.year}/{self.month:02d} - ₹{self.total_paid}"
+
+
