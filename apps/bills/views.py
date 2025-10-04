@@ -14,7 +14,8 @@ import os
 import re
 
 from .models import Bill, BillItem
-from apps.menu.models import MenuItem
+#from apps.menu.models import MenuItem
+from apps.restaurant.models import MenuItem
 from apps.rooms.models import Room
 from .permissions import IsAdminOrStaff
 from .notifications import notify_admin_via_whatsapp
@@ -124,7 +125,7 @@ class CreateRestaurantBillView(APIView):
                         try:
                             # ✅ FIXED: Use 'available' field instead of 'is_active'
                             menu_item = MenuItem.objects.get(id=item_id)
-                            item_name = menu_item.name_en or menu_item.name_hi or str(menu_item.id)
+                            item_name = getattr(menu_item, 'name', None) or getattr(menu_item, 'name_hi', None) or str(menu_item.id)
                             if price <= 0:
                                 price = menu_item.price
                         except MenuItem.DoesNotExist:
