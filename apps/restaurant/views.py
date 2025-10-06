@@ -60,7 +60,7 @@ class MenuCategoryViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = MenuCategory.objects.filter(is_active=True)
         return queryset.order_by('display_order', 'name')
-    
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context['language'] = self.request.query_params.get('lang', 'en')
@@ -1403,50 +1403,41 @@ def system_health(request):
 @permission_classes([IsAuthenticated])
 def menu_for_ordering(request):
     try:
-        """Get menu optimized for ordering interface"""
-        categories = MenuCategory.objects.filter(is_active=True).prefetch_related('items')
+        # Get from restaurant model (which is now synced)
+        categories = MenuCategory.objects.filter(is_active=True)
         menu_data = []
-
+        
         for category in categories:
-            available_items = category.items.filter(
-                is_active=True,
-                availability='available'
-            ).order_by('display_order', 'name')
-
-            if available_items.exists():
-                    # Create enhanced item data with Hindi support
-                    items_data = []
-                    for item in available_items:
-                        items_data.append({
-                            'id': item.id,
-                            'name': item.name,                    # Primary name (Hindi)
-                            'name_hi': item.name,                 # Hindi name
-                            'name_en': item.name,                 # English name (same for now)
-                            'description': item.description,
-                            'description_hi': item.description,   # Hindi description
-                            'description_en': item.description,   # English description
-                            'price': float(item.price),
-                            'category_id': category.id,
-                            'is_veg': getattr(item, 'is_veg', True),
-                            'is_spicy': getattr(item, 'is_spicy', False),
-                            'preparation_time': getattr(item, 'preparation_time', 15),
-                            'availability': item.availability,
-                            'image': item.image_url if item.image_url else None
-                        })
-
-                    menu_data.append({
-                        'id': category.id,
-                        'name': category.name,
-                        'name_hi': category.name,      # Hindi category name
-                        'name_en': category.name,      # English category name
-                        'description': category.description,
-                        'icon': category.icon,
-                        'items': items_data
-                    })
-
+            items = category.items.filter(is_active=True, availability='available')
+            if items.exists():
+                menu_data.append({
+                    'id': category.id,
+                    'name': category.name,
+                    'name_en': category.name,  # ✅ Add for compatibility
+                    'name_hi': category.name,  # ✅ Add for compatibility  
+                    'items': [{
+                        'id': item.id,
+                        'name': item.name,
+                        'name_en': item.name,  # ✅ Add for compatibility
+                        'name_hi': item.name,  # ✅ Add for compatibility
+                        'description': item.description,
+                        'description_en': item.description,  # ✅ Add for compatibility
+                        'description_hi': item.description,  # ✅ Add for compatibility
+                        'price': float(item.price),
+                        'category_id': category.id,
+                        'is_veg': item.is_veg,
+                        'is_spicy': item.is_spicy,
+                        'preparation_time': item.preparation_time,
+                        'availability': item.availability,
+                        'available': item.is_active,  # ✅ Add for compatibility
+                        'image': item.image_url
+                    } for item in items]
+                })
+        
         return Response(menu_data)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def quick_order(request):
@@ -1555,4 +1546,5 @@ def export_orders_csv(request):
         ])
 
     return response
+
 
