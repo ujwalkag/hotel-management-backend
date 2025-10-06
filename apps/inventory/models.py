@@ -6,31 +6,11 @@ from django.db.models import Sum, Count, Q
 from datetime import datetime, date, timedelta
 
 class InventoryCategory(models.Model):
-    name_en = models.CharField(max_length=100, blank=True, help_text='English name')
-    name_hi = models.CharField(max_length=100, blank=True, help_text='Hindi name')
-    description_en = models.TextField(blank=True, help_text='English description')
-    description_hi = models.TextField(blank=True, help_text='Hindi description')
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
-    def get_display_name(self, language='en'):
-        """Get name in specified language with fallback"""
-        if language == 'hi' and self.name_hi:
-            return self.name_hi
-        elif self.name_en:
-            return self.name_en
-        return self.name
-
-    def get_display_description(self, language='en'):
-        """Get description in specified language with fallback"""
-        if language == 'hi' and self.description_hi:
-            return self.description_hi
-        elif self.description_en:
-            return self.description_en  
-        return self.description
 
     def __str__(self):
         return self.name
@@ -70,8 +50,8 @@ class InventoryCategory(models.Model):
 class InventoryEntry(models.Model):
     # Existing fields
     category = models.ForeignKey(
-        InventoryCategory,
-        on_delete=models.CASCADE,
+        InventoryCategory, 
+        on_delete=models.CASCADE, 
         related_name='entries'
     )
     item_name = models.CharField(max_length=200)
@@ -82,8 +62,8 @@ class InventoryEntry(models.Model):
     supplier_name = models.CharField(max_length=200)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
+        CustomUser, 
+        on_delete=models.SET_NULL, 
         null=True
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -92,7 +72,7 @@ class InventoryEntry(models.Model):
     unit_type = models.CharField(max_length=50, default='pieces', help_text='kg, ltr, pieces, etc.')
     is_recurring = models.BooleanField(default=False, help_text='Is this a regular purchase?')
     priority = models.CharField(
-        max_length=20,
+        max_length=20, 
         choices=[
             ('low', 'Low'),
             ('medium', 'Medium'),
@@ -258,6 +238,3 @@ class SpendingBudget(models.Model):
         verbose_name = 'Spending Budget'
         verbose_name_plural = 'Spending Budgets'
         ordering = ['-created_at']
-
-
-
