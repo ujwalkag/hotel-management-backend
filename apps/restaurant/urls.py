@@ -51,10 +51,7 @@ urlpatterns = [
     path('dashboard-stats/', views.DashboardStatsView.as_view(), name='dashboard-stats'),
 
     
-
-    
     path('tables/<int:pk>/current_bill/', views.TableViewSet.as_view({'get': 'current_bill'}), name='table-current-bill'),
     path('tables/<int:pk>/complete_billing/', views.TableViewSet.as_view({'post': 'complete_billing'}), name='table-complete-billing'),
     path('orders/bulk_create/', views.OrderViewSet.as_view({'post': 'bulk_create'}), name='order-bulk-create'),
-    path('menu/', include(legacy_menu_patterns)),
 ]

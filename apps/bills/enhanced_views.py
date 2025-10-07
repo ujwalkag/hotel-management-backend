@@ -1,4 +1,5 @@
 # apps/bills/enhanced_views.py - COMPLETE SOLUTION WITH CUSTOMER HANDLING
+from apps.restaurant.models import MenuItem  # Use this instead
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response

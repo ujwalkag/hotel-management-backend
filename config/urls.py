@@ -6,6 +6,7 @@ from django.urls import path, include
 from apps.users.views import CustomTokenObtainPairView ,  verify_token
 from rest_framework_simplejwt.views import TokenRefreshView
 
+
 urlpatterns = [
     path('api/auth/token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
