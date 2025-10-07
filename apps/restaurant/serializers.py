@@ -13,7 +13,7 @@ class MenuCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = MenuCategory
         fields = [
-            'id', 'name', 'description', 'display_order', 'icon', 
+            'id', 'name', 'description', 'display_order', 'icon','name_en', 'name_hi', 
             'is_active', 'items_count', 'created_at'
         ]
     

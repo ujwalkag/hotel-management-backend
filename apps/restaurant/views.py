@@ -253,15 +253,15 @@ class MenuForOrderingView(APIView):
                     menu_data.append({
                         'id': category.id,
                         'name': category.name,
-                        'name_hi': category.name,  # ✅ Category name as Hindi
-                        'name_en': category.name,  # ✅ Same for English (could be translated later)
+                        'name_hi': category.name_hi or category.name,  # Use correct Hindi name or fallback to English
+                        'name_en': category.name_en or category.name,
                         'description': category.description,
                         'icon': getattr(category, 'icon', '🍽️'),
                         'items': [{
                             'id': item.id,
                             'name': item.name,
-                            'name_hi': item.name,                 # ✅ Hindi name (same as name)
-                            'name_en': item.name,
+                            'name_hi': item.name_hi or item.name,                 # ✅ Hindi name (same as name)
+                            'name_en': item.name_en or item.name,
                             'description': item.description,
                             'description_hi': item.description,  # ✅ Hindi description
                             'description_en': item.description,  # ✅ English description
