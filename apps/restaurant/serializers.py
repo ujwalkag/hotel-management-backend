@@ -40,13 +40,20 @@ class MenuItemSerializer(serializers.ModelSerializer):
         ]
 
 class MenuItemCreateSerializer(serializers.ModelSerializer):
-    # Frontend compatibility fields
+    # Frontend compatibility fields - make these the PRIMARY fields
     name_en = serializers.CharField(required=True)
     name_hi = serializers.CharField(required=False, allow_blank=True)
-    description_en = serializers.CharField(required=False, allow_blank=True)
+    description_en = serializers.CharField(required=False, allow_blank=True)  
     description_hi = serializers.CharField(required=False, allow_blank=True)
     category_id = serializers.IntegerField(write_only=True, required=True)
     available = serializers.BooleanField(required=False, default=True)
+    
+    # CRITICAL: Override model fields to make them NOT required during DRF validation
+    name = serializers.CharField(required=False, allow_blank=True)
+    category = serializers.PrimaryKeyRelatedField(queryset=MenuCategory.objects.all(), required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+    availability = serializers.CharField(required=False)
+    is_active = serializers.BooleanField(required=False)
     
     class Meta:
         model = MenuItem
@@ -65,13 +72,13 @@ class MenuItemCreateSerializer(serializers.ModelSerializer):
         # Validate and map category
         category_id = data.get('category_id')
         if not category_id:
-            raise serializers.ValidationError({"category": "Category is required"})
+            raise serializers.ValidationError({"category_id": "Category is required"})
         
         try:
             category = MenuCategory.objects.get(id=int(category_id), is_active=True)
             data['category'] = category
         except (MenuCategory.DoesNotExist, ValueError, TypeError):
-            raise serializers.ValidationError({"category": "Invalid category selected"})
+            raise serializers.ValidationError({"category_id": "Invalid category selected"})
         
         # Validate and map names
         name_en = data.get('name_en', '').strip()
