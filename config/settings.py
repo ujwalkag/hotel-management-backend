@@ -45,7 +45,6 @@ INSTALLED_APPS = [
     'corsheaders',
     'apps.advance_booking',
     'apps.users',
-    'apps.menu',
     'apps.rooms',
     'apps.bills',
     'apps.notifications',

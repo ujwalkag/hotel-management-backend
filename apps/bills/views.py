@@ -87,7 +87,7 @@ class CreateRestaurantBillView(APIView):
             # Enhanced billing settings
             payment_method = request.data.get("payment_method", "cash")
             apply_gst = request.data.get("apply_gst", False)  # ✅ DEFAULT TO FALSE
-            
+
             # Also handle string values from frontend
             if isinstance(apply_gst, str):
                 apply_gst = apply_gst.lower() in ['true', '1', 'yes']
@@ -188,7 +188,7 @@ class CreateRestaurantBillView(APIView):
             if apply_gst and gst_rate > 0:
                 gst_rate_decimal = Decimal(str(gst_rate)) / 100
                 gst_amount = taxable_amount * gst_rate_decimal
-                
+
                 if interstate:
                     igst_amount = gst_amount
                 else:
@@ -280,7 +280,7 @@ class CreateRestaurantBillView(APIView):
             import traceback
             print(f"Restaurant billing error: {e}")
             print(f"Full traceback: {traceback.format_exc()}")
-            
+
             return Response({
                 "error": f"Failed to create bill: {str(e)}",
                 "details": "Please check server logs for more information"
@@ -288,105 +288,188 @@ class CreateRestaurantBillView(APIView):
 
 class CreateRoomBillView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
-
+    
     def post(self, request):
-        user = request.user
-        data = request.data
-
-        # Required fields
-        customer_name = data.get("customer_name", "").strip()
-        customer_phone = data.get("customer_phone", "").strip()
-        items = data.get("items", [])  # Expecting list of {room, quantity}
-        payment_method = data.get("payment_method", "cash")
-        apply_gst = data.get("apply_gst", False)
-        notify_flag = data.get("notify_customer", False)
-
-        # Validate
-        if not customer_name or not customer_phone or not items or not isinstance(items, list):
-            return Response(
-                {"error": "Customer name, phone and items required"},
-                status=status.HTTP_400_BAD_REQUEST
+        try:  # Add comprehensive error handling
+            user = request.user
+            data = request.data
+            
+            # Required fields
+            customer_name = data.get("customer_name", "").strip()
+            customer_phone = data.get("customer_phone", "").strip()
+            items = data.get("items", [])  # Expecting list of {room, quantity}
+            payment_method = data.get("payment_method", "cash")
+            apply_gst = data.get("apply_gst", False)
+            notify_flag = data.get("notify_customer", False)
+            
+            # Enhanced validation
+            if not customer_name:
+                return Response(
+                    {"error": "Customer name is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if not customer_phone:
+                return Response(
+                    {"error": "Customer phone is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+            if not items or not isinstance(items, list):
+                return Response(
+                    {"error": "Items list is required"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Calculate base total with enhanced error handling
+            base_total = Decimal(0)
+            validated_items = []
+            
+            for it in items:
+                try:
+                    room_id = it.get("room")
+                    if not room_id:
+                        return Response(
+                            {"error": "Room ID is required for each item"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    room = Room.objects.get(id=room_id)
+                    qty = int(it.get("quantity", 1))
+                    
+                    if qty <= 0:
+                        return Response(
+                            {"error": "Quantity must be greater than 0"},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                    
+                    item_total = room.price_per_day * qty
+                    base_total += item_total
+                    
+                    validated_items.append({
+                        'room': room,
+                        'quantity': qty,
+                        'item_total': item_total
+                    })
+                    
+                except Room.DoesNotExist:
+                    return Response(
+                        {"error": f"Room with ID {room_id} not found"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                except (ValueError, TypeError) as e:
+                    return Response(
+                        {"error": f"Invalid quantity: {str(e)}"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # GST calculation
+            gst_rate = Decimal(0)
+            if apply_gst:
+                if base_total < 1000:
+                    gst_rate = Decimal("0.00")
+                elif base_total < 7500:
+                    gst_rate = Decimal("0.05")
+                else:
+                    gst_rate = Decimal("0.12")
+            
+            gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
+            total_amount = base_total + gst_amount
+            
+            # Create bill
+            bill = Bill.objects.create(
+                user=user,
+                bill_type="room",
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                total_amount=total_amount,
+                payment_method=payment_method
             )
-
-        # Calculate base total
-        base_total = Decimal(0)
-        for it in items:
+            
+            # Create BillItems with FIXED room name handling
+            for item_data in validated_items:
+                room = item_data['room']
+                qty = item_data['quantity']
+                
+                # 🔧 FIXED: Proper fallback handling for room type
+                room_type_en = getattr(room, 'type_en', 'Unknown Room')
+                room_type_hi = getattr(room, 'type_hi', 'अज्ञात कमरा')
+                
+                BillItem.objects.create(
+                    bill=bill,
+                    item_name=f"{room_type_en} / {room_type_hi}",  # ✅ FIXED LINE 350
+                    quantity=qty,
+                    price=room.price_per_day
+                )
+            
+            # Generate PDF with error handling
             try:
-                room = Room.objects.get(id=it.get("room"))
-                qty = int(it.get("quantity", 1))
-                base_total += room.price_per_day * qty
-            except (Room.DoesNotExist, ValueError, TypeError):
-                return Response({"error": "Invalid room or quantity"}, status=400)
-
-        # GST calculation
-        gst_rate = Decimal(0)
-        if apply_gst:
-            if base_total < 1000:
-                gst_rate = Decimal("0.00")
-            elif base_total < 7500:
-                gst_rate = Decimal("0.05")
-            else:
-                gst_rate = Decimal("0.12")
-
-        gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
-        total_amount = base_total + gst_amount
-
-        # Create bill
-        bill = Bill.objects.create(
-            user=user,
-            bill_type="room",
-            customer_name=customer_name,
-            customer_phone=customer_phone,
-            total_amount=total_amount,
-            payment_method=payment_method
-        )
-
-        # Create BillItems
-        for it in items:
-            room = Room.objects.get(id=it.get("room"))
-            qty = int(it.get("quantity", 1))
-            BillItem.objects.create(
-                bill=bill,
-                item_name=f"{getattr(room, 'type_en', room.type)} / {getattr(room, 'type_hi', room.type)}",
-                quantity=qty,
-                price=room.price_per_day
-            )
-
-        # Render PDF
-        folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
-        os.makedirs(folder, exist_ok=True)
-        filename = f"{bill.receipt_number}.pdf"
-        pdf_path = os.path.join(folder, filename)
-
-        render_to_pdf("bills/bill_pdf.html", {
-            "bill": bill,
-            "items": bill.items.all(),
-            "gst": gst_amount,
-            "gst_rate_percent": float(gst_rate * 100),
-        }, pdf_path)
-
-        # Notify admin
-        notify_admin_via_whatsapp(
-            f"🛏️ New Room Bill\\nCustomer: {customer_name}\\nPhone: {customer_phone}\\nTotal: ₹{total_amount}\\nReceipt: {bill.receipt_number}"
-        )
-
-        # Notify customer if requested
-        if notify_flag:
-            notify_customer_via_sms(
-                customer_phone,
-                f"Hi {customer_name}, your room bill is ₹{total_amount}. Receipt: {bill.receipt_number}"
-            )
-
-        # Response
-        return Response({
-            "message": "Room bill created",
-            "bill_id": bill.id,
-            "receipt_number": bill.receipt_number,
-            "gst_applied": bool(apply_gst),
-            "gst_rate": float(gst_rate * 100),
-            "gst_amount": float(gst_amount),
-            "total_amount": float(total_amount),
-        }, status=status.HTTP_201_CREATED)
+                folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
+                os.makedirs(folder, exist_ok=True)
+                filename = f"{bill.receipt_number}.pdf"
+                pdf_path = os.path.join(folder, filename)
+                
+                render_to_pdf("bills/bill_pdf.html", {
+                    "bill": bill,
+                    "items": bill.items.all(),
+                    "gst": gst_amount,
+                    "gst_rate_percent": float(gst_rate * 100),
+                    "subtotal": base_total,
+                    "total_amount": total_amount
+                }, pdf_path)
+                
+            except Exception as pdf_error:
+                # Don't fail the entire operation if PDF generation fails
+                print(f"PDF generation error: {pdf_error}")
+            
+            # Notify admin with error handling
+            try:
+                notify_admin_via_whatsapp(
+                    f"🛏️ New Room Bill\n"
+                    f"Customer: {customer_name}\n"
+                    f"Phone: {customer_phone}\n"
+                    f"Total: ₹{total_amount}\n"
+                    f"Receipt: {bill.receipt_number}"
+                )
+            except Exception as notify_error:
+                print(f"Admin notification error: {notify_error}")
+            
+            # Notify customer if requested
+            if notify_flag and customer_phone:
+                try:
+                    notify_customer_via_sms(
+                        customer_phone,
+                        f"Hi {customer_name}, your room bill is ₹{total_amount}. Receipt: {bill.receipt_number}"
+                    )
+                except Exception as customer_notify_error:
+                    print(f"Customer notification error: {customer_notify_error}")
+            
+            # Enhanced response with detailed breakdown
+            return Response({
+                "message": "Room bill created successfully",
+                "bill_id": bill.id,
+                "receipt_number": bill.receipt_number,
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "payment_method": payment_method,
+                "gst_applied": bool(apply_gst),
+                "gst_rate": float(gst_rate * 100),
+                "gst_amount": float(gst_amount),
+                "subtotal": float(base_total),
+                "total_amount": float(total_amount),
+                "items_count": len(validated_items)
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            # Comprehensive error logging
+            import traceback
+            print(f"Room billing error: {e}")
+            print(f"Full traceback: {traceback.format_exc()}")
+            
+            return Response({
+                "error": f"Failed to create room bill: {str(e)}",
+                "details": "Please check server logs for more information"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class BillPDFView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
@@ -447,7 +530,7 @@ def get_orders_ready_for_billing(request):
             orders = Order.objects.filter(
                 status__in=['served', 'ready']
             ).select_related('table', 'menu_item', 'created_by')
-            
+
             order_data = []
             for order in orders:
                 order_data.append({
@@ -484,7 +567,7 @@ def get_orders_ready_for_billing(request):
             orders = TableOrder.objects.filter(
                 status__in=['completed', 'ready']
             ).exclude(status='billed').select_related('table', 'waiter').prefetch_related('items__menu_item')
-            
+
             order_data = []
             for order in orders:
                 order_data.append({
@@ -541,7 +624,7 @@ def generate_bill_from_order(request):
         try:
             from apps.restaurant.models import Order
             order = get_object_or_404(Order, id=order_id)
-            
+
             # Check if order is ready for billing
             if order.status not in ['served', 'ready']:
                 return Response({
@@ -570,7 +653,7 @@ def generate_bill_from_order(request):
             # Fallback to tables app
             from apps.tables.models import TableOrder
             order = get_object_or_404(TableOrder, id=order_id)
-            
+
             # Check if order is ready for billing
             if order.status not in ['completed', 'ready']:
                 return Response({
@@ -647,3 +730,5 @@ def generate_bill_from_order(request):
         return Response({
             'error': f'Failed to generate bill: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+

@@ -15,7 +15,7 @@ from django.utils import timezone
 from .models import Bill, BillItem
 from .serializers import BillSerializer
 from apps.restaurant.models import Table, Order, MenuItem, MenuCategory, OrderSession
-from apps.menu.models import MenuItem as MenuItemOld  # Your old menu model
+#from apps.menu.models import MenuItem as MenuItemOld  # Your old menu model
 from .utils import render_to_pdf
 from django.template.loader import render_to_string
 

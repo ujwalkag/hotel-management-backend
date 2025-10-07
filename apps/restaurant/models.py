@@ -133,6 +133,8 @@ class Table(models.Model):
 class MenuCategory(models.Model):
     """Menu item categories"""
     name = models.CharField(max_length=100, unique=True)
+    name_en = models.CharField(max_length=255, blank=True, help_text='English name for compatibility')
+    name_hi = models.CharField(max_length=255, blank=True, help_text='Hindi name for compatibility')
     description = models.TextField(blank=True)
     display_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
@@ -146,6 +148,16 @@ class MenuCategory(models.Model):
 
     def __str__(self):
         return self.name
+    
+    def save(self, *args, **kwargs):
+        # Auto-populate compatibility fields
+        if not self.name_en and self.name:
+            self.name_en = self.name
+        if not self.name_hi:
+            self.name_hi = self.name_en or self.name
+        if not self.name and self.name_en:
+            self.name = self.name_en
+        super().save(*args, **kwargs)
 
 class MenuItem(models.Model):
     """Restaurant menu items"""
@@ -170,6 +182,12 @@ class MenuItem(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    name_en = models.CharField(max_length=255, blank=True, help_text='English name for compatibility')
+    name_hi = models.CharField(max_length=255, blank=True, help_text='Hindi name for compatibility') 
+    description_en = models.TextField(blank=True, help_text='English description for compatibility')
+    description_hi = models.TextField(blank=True, help_text='Hindi description for compatibility')
+    available = models.BooleanField(default=True, help_text='Backward compatibility field')
+    
 
     class Meta:
         db_table = 'menu_item'
@@ -177,6 +195,27 @@ class MenuItem(models.Model):
 
     def __str__(self):
         return f"{self.name} - ₹{self.price}"
+    
+    def save(self, *args, **kwargs):
+        # Auto-populate compatibility fields
+        if not self.name_en and self.name:
+            self.name_en = self.name
+        if not self.name_hi:
+            self.name_hi = self.name_en or self.name
+        if not self.name and self.name_en:
+            self.name = self.name_en
+            
+        if not self.description_en and self.description:
+            self.description_en = self.description
+        if not self.description_hi:
+            self.description_hi = self.description_en or self.description
+        if not self.description and self.description_en:
+            self.description = self.description_en
+            
+        # Sync availability fields
+        self.available = self.availability == 'available' and self.is_active
+        
+        super().save(*args, **kwargs)
 
     @property
     def is_available(self):

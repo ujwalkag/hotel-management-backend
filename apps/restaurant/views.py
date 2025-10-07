@@ -271,7 +271,7 @@ class MenuForOrderingView(APIView):
                             'is_spicy': getattr(item, 'is_spicy', False),
                             'preparation_time': getattr(item, 'preparation_time', 15),
                             'availability': item.availability,
-                            'image': item.image.url if item.image else None
+                            'image': item.image.url if item.image else None,
                         } for item in items]
                     })
 
@@ -1406,7 +1406,7 @@ def menu_for_ordering(request):
         # Get from restaurant model (which is now synced)
         categories = MenuCategory.objects.filter(is_active=True)
         menu_data = []
-        
+
         for category in categories:
             items = category.items.filter(is_active=True, availability='available')
             if items.exists():
@@ -1414,7 +1414,7 @@ def menu_for_ordering(request):
                     'id': category.id,
                     'name': category.name,
                     'name_en': category.name,  # ✅ Add for compatibility
-                    'name_hi': category.name,  # ✅ Add for compatibility  
+                    'name_hi': category.name,  # ✅ Add for compatibility
                     'items': [{
                         'id': item.id,
                         'name': item.name,
@@ -1433,7 +1433,7 @@ def menu_for_ordering(request):
                         'image': item.image_url
                     } for item in items]
                 })
-        
+
         return Response(menu_data)
     except Exception as e:
         return Response({'error': str(e)}, status=500)
@@ -1546,5 +1546,214 @@ def export_orders_csv(request):
         ])
 
     return response
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def menu_items_legacy_crud(request):
+    """Legacy menu items endpoint with full CRUD - /api/restaurant/menu/items/"""
+    if request.method == 'GET':
+        try:
+            items = MenuItem.objects.filter(is_active=True).select_related('category')
+            
+            # Transform to legacy format with FIXED field mappings
+            legacy_items = []
+            for item in items:
+                legacy_items.append({
+                    'id': item.id,
+                    'name': item.name,
+                    'name_en': getattr(item, 'name_en', None) or item.name,
+                    'name_hi': getattr(item, 'name_hi', None) or item.name,
+                    'description_en': getattr(item, 'description_en', None) or item.description,
+                    'description_hi': getattr(item, 'description_hi', None) or item.description,
+                    'price': float(item.price),
+                    'available': getattr(item, 'available', True) and item.is_active,
+                    'category': {
+                        'id': item.category.id,
+                        'name': item.category.name,
+                        'name_en': getattr(item.category, 'name_en', None) or item.category.name,
+                        'name_hi': getattr(item.category, 'name_hi', None) or item.category.name,
+                    } if item.category else None,
+                    # ✅ FIXED: Handle both image fields safely
+                    'image': item.image_url if hasattr(item, 'image_url') and item.image_url else (
+                        item.image.url if hasattr(item, 'image') and item.image else None
+                    ),
+                    'created_at': item.created_at.isoformat(),
+                    'updated_at': item.updated_at.isoformat()
+                })
+            
+            return Response(legacy_items)
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in menu_items_legacy_crud: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            return Response({'error': str(e)}, status=500)
+    
+    elif request.method == 'POST':
+        # Handle creation with safe field access
+        try:
+            data = request.data
+            category_id = data.get('category_id') or data.get('category')
+            category = None
+            if category_id:
+                category = MenuCategory.objects.get(id=category_id)
+            
+            # Create item with safe field mapping
+            item_data = {
+                'name': data.get('name_en', data.get('name', '')),
+                'description': data.get('description_en', data.get('description', '')),
+                'category': category,
+                'price': data.get('price', 0),
+                'availability': 'available' if data.get('available', True) else 'out_of_stock',
+                'is_active': data.get('available', True),
+                'preparation_time': data.get('preparation_time', 15),
+                'is_veg': data.get('is_veg', True)
+            }
+            
+            # Add compatibility fields if they exist
+            if hasattr(MenuItem, 'name_en'):
+                item_data['name_en'] = data.get('name_en', data.get('name', ''))
+            if hasattr(MenuItem, 'name_hi'):
+                item_data['name_hi'] = data.get('name_hi', data.get('name', ''))
+            if hasattr(MenuItem, 'description_en'):
+                item_data['description_en'] = data.get('description_en', data.get('description', ''))
+            if hasattr(MenuItem, 'description_hi'):
+                item_data['description_hi'] = data.get('description_hi', data.get('description', ''))
+            if hasattr(MenuItem, 'available'):
+                item_data['available'] = data.get('available', True)
+            
+            item = MenuItem.objects.create(**item_data)
+            
+            return Response({
+                'id': item.id,
+                'name_en': getattr(item, 'name_en', None) or item.name,
+                'name_hi': getattr(item, 'name_hi', None) or item.name,
+                'price': float(item.price),
+                'available': getattr(item, 'available', True) and item.is_active,
+                'category': {'id': category.id, 'name_en': getattr(category, 'name_en', None) or category.name} if category else None
+            }, status=201)
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error creating menu item: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            return Response({'error': str(e)}, status=400)
+        
+@api_view(['GET', 'PUT', 'DELETE'])
+@permission_classes([IsAuthenticated])
+def menu_item_detail_legacy(request, pk):
+    """Legacy menu item detail endpoint - /api/restaurant/menu/items/{id}/"""
+    try:
+        item = MenuItem.objects.get(id=pk, is_active=True)
+    except MenuItem.DoesNotExist:
+        return Response({'error': 'Item not found'}, status=404)
+
+    if request.method == 'GET':
+        return Response({
+            'id': item.id,
+            'name': item.name,
+            'name_en': item.name_en or item.name,
+            'name_hi': item.name_hi or item.name,
+            'description_en': item.description_en or item.description,
+            'description_hi': item.description_hi or item.description,
+            'price': float(item.price),
+            'available': item.available,
+            'category': {
+                'id': item.category.id,
+                'name_en': item.category.name_en or item.category.name,
+                'name_hi': item.category.name_hi or item.category.name,
+            } if item.category else None,
+            'created_at': item.created_at.isoformat(),
+            'updated_at': item.updated_at.isoformat()
+        })
+
+    elif request.method == 'PUT':
+        # Handle updates
+        try:
+            data = request.data
+            category_id = data.get('category_id') or data.get('category')
+            if category_id:
+                category = MenuCategory.objects.get(id=category_id)
+                item.category = category
+
+            # Update fields
+            if 'name_en' in data:
+                item.name_en = data['name_en']
+                item.name = data['name_en']
+            if 'name_hi' in data:
+                item.name_hi = data['name_hi']
+            if 'description_en' in data:
+                item.description_en = data['description_en']
+                item.description = data['description_en']
+            if 'description_hi' in data:
+                item.description_hi = data['description_hi']
+            if 'price' in data:
+                item.price = data['price']
+            if 'available' in data:
+                item.available = data['available']
+                item.availability = 'available' if data['available'] else 'out_of_stock'
+                item.is_active = data['available']
+
+            item.save()
+
+            return Response({
+                'id': item.id,
+                'name_en': item.name_en,
+                'name_hi': item.name_hi,
+                'price': float(item.price),
+                'available': item.available
+            })
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    elif request.method == 'DELETE':
+        # Soft delete
+        item.is_active = False
+        item.save()
+        return Response({'message': 'Item deleted'}, status=204)
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def menu_categories_legacy_crud(request):
+    """Legacy menu categories endpoint - /api/restaurant/menu/categories/"""
+    if request.method == 'GET':
+        categories = MenuCategory.objects.filter(is_active=True)
+
+        # Transform to legacy format
+        legacy_categories = []
+        for cat in categories:
+            legacy_categories.append({
+                'id': cat.id,
+                'name': cat.name,
+                'name_en': cat.name_en or cat.name,
+                'name_hi': cat.name_hi or cat.name,
+                'description': cat.description
+            })
+
+        return Response(legacy_categories)
+
+    elif request.method == 'POST':
+        try:
+            data = request.data
+            category = MenuCategory.objects.create(
+                name=data.get('name_en', data.get('name', '')),
+                name_en=data.get('name_en', data.get('name', '')),
+                name_hi=data.get('name_hi', data.get('name', '')),
+                description=data.get('description', ''),
+                is_active=True,
+                display_order=MenuCategory.objects.count()
+            )
+
+            return Response({
+                'id': category.id,
+                'name_en': category.name_en,
+                'name_hi': category.name_hi,
+                'description': category.description
+            }, status=201)
+
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
 
 

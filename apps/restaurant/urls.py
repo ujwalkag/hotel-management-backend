@@ -15,6 +15,11 @@ router.register(r'kds-settings', views.KitchenDisplaySettingsViewSet, basename='
 billing_router = DefaultRouter()
 billing_router.register(r'enhanced', views.EnhancedBillingViewSet, basename='enhanced-billing')
 
+legacy_menu_patterns = [
+    path('items/', views.menu_items_legacy_crud, name='menu-items-legacy'),
+    path('items/<int:pk>/', views.menu_item_detail_legacy, name='menu-item-detail-legacy'),
+    path('categories/', views.menu_categories_legacy_crud, name='menu-categories-legacy'),
+]
 urlpatterns = [
     # Main router URLs
     path('', include(router.urls)),
@@ -51,4 +56,5 @@ urlpatterns = [
     path('tables/<int:pk>/current_bill/', views.TableViewSet.as_view({'get': 'current_bill'}), name='table-current-bill'),
     path('tables/<int:pk>/complete_billing/', views.TableViewSet.as_view({'post': 'complete_billing'}), name='table-complete-billing'),
     path('orders/bulk_create/', views.OrderViewSet.as_view({'post': 'bulk_create'}), name='order-bulk-create'),
+    path('menu/', include(legacy_menu_patterns)),
 ]
