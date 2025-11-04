@@ -27,6 +27,7 @@ urlpatterns = [
     # Enhanced billing URLs for frontend compatibility
     path('bills/', include(billing_router.urls)),
     
+
     # Dashboard and statistics endpoints
     path('dashboard-stats/', views.dashboard_stats, name='dashboard-stats'),
     path('system-health/', views.system_health, name='system-health'),

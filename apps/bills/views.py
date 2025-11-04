@@ -288,12 +288,12 @@ class CreateRestaurantBillView(APIView):
 
 class CreateRoomBillView(APIView):
     permission_classes = [IsAuthenticated, IsAdminOrStaff]
-    
+
     def post(self, request):
         try:  # Add comprehensive error handling
             user = request.user
             data = request.data
-            
+
             # Required fields
             customer_name = data.get("customer_name", "").strip()
             customer_phone = data.get("customer_phone", "").strip()
@@ -301,30 +301,30 @@ class CreateRoomBillView(APIView):
             payment_method = data.get("payment_method", "cash")
             apply_gst = data.get("apply_gst", False)
             notify_flag = data.get("notify_customer", False)
-            
+
             # Enhanced validation
             if not customer_name:
                 return Response(
                     {"error": "Customer name is required"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             if not customer_phone:
                 return Response(
                     {"error": "Customer phone is required"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-                
+
             if not items or not isinstance(items, list):
                 return Response(
                     {"error": "Items list is required"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # Calculate base total with enhanced error handling
             base_total = Decimal(0)
             validated_items = []
-            
+
             for it in items:
                 try:
                     room_id = it.get("room")
@@ -333,25 +333,25 @@ class CreateRoomBillView(APIView):
                             {"error": "Room ID is required for each item"},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                    
+
                     room = Room.objects.get(id=room_id)
                     qty = int(it.get("quantity", 1))
-                    
+
                     if qty <= 0:
                         return Response(
                             {"error": "Quantity must be greater than 0"},
                             status=status.HTTP_400_BAD_REQUEST
                         )
-                    
+
                     item_total = room.price_per_day * qty
                     base_total += item_total
-                    
+
                     validated_items.append({
                         'room': room,
                         'quantity': qty,
                         'item_total': item_total
                     })
-                    
+
                 except Room.DoesNotExist:
                     return Response(
                         {"error": f"Room with ID {room_id} not found"},
@@ -362,7 +362,7 @@ class CreateRoomBillView(APIView):
                         {"error": f"Invalid quantity: {str(e)}"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-            
+
             # GST calculation
             gst_rate = Decimal(0)
             if apply_gst:
@@ -372,10 +372,10 @@ class CreateRoomBillView(APIView):
                     gst_rate = Decimal("0.05")
                 else:
                     gst_rate = Decimal("0.12")
-            
+
             gst_amount = (base_total * gst_rate).quantize(Decimal("0.01"))
             total_amount = base_total + gst_amount
-            
+
             # Create bill
             bill = Bill.objects.create(
                 user=user,
@@ -385,30 +385,30 @@ class CreateRoomBillView(APIView):
                 total_amount=total_amount,
                 payment_method=payment_method
             )
-            
+
             # Create BillItems with FIXED room name handling
             for item_data in validated_items:
                 room = item_data['room']
                 qty = item_data['quantity']
-                
+
                 # 🔧 FIXED: Proper fallback handling for room type
                 room_type_en = getattr(room, 'type_en', 'Unknown Room')
                 room_type_hi = getattr(room, 'type_hi', 'अज्ञात कमरा')
-                
+
                 BillItem.objects.create(
                     bill=bill,
                     item_name=f"{room_type_en} / {room_type_hi}",  # ✅ FIXED LINE 350
                     quantity=qty,
                     price=room.price_per_day
                 )
-            
+
             # Generate PDF with error handling
             try:
                 folder = os.path.join(settings.MEDIA_ROOT, "bills", datetime.now().strftime("%Y-%m"))
                 os.makedirs(folder, exist_ok=True)
                 filename = f"{bill.receipt_number}.pdf"
                 pdf_path = os.path.join(folder, filename)
-                
+
                 render_to_pdf("bills/bill_pdf.html", {
                     "bill": bill,
                     "items": bill.items.all(),
@@ -417,11 +417,11 @@ class CreateRoomBillView(APIView):
                     "subtotal": base_total,
                     "total_amount": total_amount
                 }, pdf_path)
-                
+
             except Exception as pdf_error:
                 # Don't fail the entire operation if PDF generation fails
                 print(f"PDF generation error: {pdf_error}")
-            
+
             # Notify admin with error handling
             try:
                 notify_admin_via_whatsapp(
@@ -433,7 +433,7 @@ class CreateRoomBillView(APIView):
                 )
             except Exception as notify_error:
                 print(f"Admin notification error: {notify_error}")
-            
+
             # Notify customer if requested
             if notify_flag and customer_phone:
                 try:
@@ -443,7 +443,7 @@ class CreateRoomBillView(APIView):
                     )
                 except Exception as customer_notify_error:
                     print(f"Customer notification error: {customer_notify_error}")
-            
+
             # Enhanced response with detailed breakdown
             return Response({
                 "message": "Room bill created successfully",
@@ -459,13 +459,13 @@ class CreateRoomBillView(APIView):
                 "total_amount": float(total_amount),
                 "items_count": len(validated_items)
             }, status=status.HTTP_201_CREATED)
-            
+
         except Exception as e:
             # Comprehensive error logging
             import traceback
             print(f"Room billing error: {e}")
             print(f"Full traceback: {traceback.format_exc()}")
-            
+
             return Response({
                 "error": f"Failed to create room bill: {str(e)}",
                 "details": "Please check server logs for more information"
@@ -730,5 +730,6 @@ def generate_bill_from_order(request):
         return Response({
             'error': f'Failed to generate bill: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
